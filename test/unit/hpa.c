@@ -374,6 +374,23 @@ defer_test_purge(void *ptr, size_t size) {
 	++ndefer_purge_calls;
 }
 
+static bool
+defer_vectorized_purge(struct iovec* vec, size_t vlen, size_t nbytes) {
+        (void)vec;
+        (void)nbytes;
+        ndefer_purge_calls += vlen;
+        return true;
+}
+
+static bool defer_vec_purge_didfail = false;
+static bool defer_vectorized_purge_fail(struct iovec* vec, size_t vlen, size_t nbytes) {
+      (void)vec;
+      (void)vlen;
+      (void)nbytes;
+      defer_vec_purge_didfail = true;
+      return false;
+}
+
 static size_t ndefer_hugify_calls = 0;
 static bool
 defer_test_hugify(void *ptr, size_t size, bool sync) {
@@ -409,6 +426,7 @@ TEST_BEGIN(test_defer_time) {
 	hooks.dehugify = &defer_test_dehugify;
 	hooks.curtime = &defer_test_curtime;
 	hooks.ms_since = &defer_test_ms_since;
+        hooks.vectorized_purge = &defer_vectorized_purge;
 
 	hpa_shard_opts_t opts = test_hpa_shard_opts_default;
 	opts.deferral_allowed = true;
@@ -518,6 +536,7 @@ TEST_BEGIN(test_no_min_purge_interval) {
 	hooks.dehugify = &defer_test_dehugify;
 	hooks.curtime = &defer_test_curtime;
 	hooks.ms_since = &defer_test_ms_since;
+        hooks.vectorized_purge = &defer_vectorized_purge;
 
 	hpa_shard_opts_t opts = test_hpa_shard_opts_default;
 	opts.deferral_allowed = true;
@@ -560,6 +579,7 @@ TEST_BEGIN(test_min_purge_interval) {
 	hooks.dehugify = &defer_test_dehugify;
 	hooks.curtime = &defer_test_curtime;
 	hooks.ms_since = &defer_test_ms_since;
+        hooks.vectorized_purge = &defer_vectorized_purge;
 
 	hpa_shard_opts_t opts = test_hpa_shard_opts_default;
 	opts.deferral_allowed = true;
@@ -610,6 +630,7 @@ TEST_BEGIN(test_purge) {
 	hooks.dehugify = &defer_test_dehugify;
 	hooks.curtime = &defer_test_curtime;
 	hooks.ms_since = &defer_test_ms_since;
+        hooks.vectorized_purge = &defer_vectorized_purge;
 
 	hpa_shard_opts_t opts = test_hpa_shard_opts_default;
 	opts.deferral_allowed = true;
@@ -676,6 +697,7 @@ TEST_BEGIN(test_experimental_max_purge_nhp) {
 	hooks.dehugify = &defer_test_dehugify;
 	hooks.curtime = &defer_test_curtime;
 	hooks.ms_since = &defer_test_ms_since;
+        hooks.vectorized_purge = &defer_vectorized_purge;
 
 	hpa_shard_opts_t opts = test_hpa_shard_opts_default;
 	opts.deferral_allowed = true;
@@ -733,6 +755,45 @@ TEST_BEGIN(test_experimental_max_purge_nhp) {
 }
 TEST_END
 
+TEST_BEGIN(test_vectorized_failure_fallback) {
+        test_skip_if(!hpa_supported() || (opt_process_madvise_max_batch == 0));
+
+        hpa_hooks_t hooks;
+        hooks.map = &defer_test_map;
+        hooks.unmap = &defer_test_unmap;
+        hooks.purge = &defer_test_purge;
+        hooks.hugify = &defer_test_hugify;
+        hooks.dehugify = &defer_test_dehugify;
+        hooks.curtime = &defer_test_curtime;
+        hooks.ms_since = &defer_test_ms_since;
+        hooks.vectorized_purge = &defer_vectorized_purge_fail;
+        defer_vec_purge_didfail = false;
+
+        hpa_shard_opts_t opts = test_hpa_shard_opts_default;
+        opts.deferral_allowed = true;
+        opts.min_purge_interval_ms = 0;
+
+        hpa_shard_t *shard = create_test_data(&hooks, &opts);
+
+        bool deferred_work_generated = false;
+
+        nstime_init(&defer_curtime, 0);
+        tsdn_t *tsdn = tsd_tsdn(tsd_fetch());
+
+        edata_t *edata = pai_alloc(tsdn, &shard->pai, PAGE, PAGE, false,
+	    false, false, &deferred_work_generated);
+        expect_ptr_not_null(edata, "Unexpected null edata");
+        pai_dalloc(tsdn, &shard->pai, edata, &deferred_work_generated);
+        hpa_shard_do_deferred_work(tsdn, shard);
+
+        expect_true(defer_vec_purge_didfail, "Expect vec purge fail");
+        expect_zu_eq(1, ndefer_purge_calls, "Expect purge");
+        ndefer_purge_calls = 0;
+
+        destroy_test_data(shard);
+}
+TEST_END
+
 int
 main(void) {
 	/*
@@ -756,5 +817,6 @@ main(void) {
 	    test_no_min_purge_interval,
 	    test_min_purge_interval,
 	    test_purge,
-	    test_experimental_max_purge_nhp);
+	    test_experimental_max_purge_nhp,
+           test_vectorized_failure_fallback);
 }
