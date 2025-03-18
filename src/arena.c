@@ -1212,6 +1212,7 @@ label_refill:
 	}
 
 	cache_bin_finish_fill(cache_bin, &ptrs, filled);
+	cache_bin_ptr_array_prefetch(&ptrs, filled);
 	arena_decay_tick(tsdn, arena);
 }
 

@@ -48,6 +48,37 @@ extern const uintptr_t disabled_bin;
 #define CACHE_BIN_NCACHED_MAX (((size_t)1 << sizeof(cache_bin_sz_t) * 8) \
     / sizeof(void *) - 1)
 
+#define NPREFETCH_CACHE_FILL_MAX 64
+#define NPREFETCH_CACHE_FILL_DEFAULT 0
+
+typedef enum {
+	/*
+	 * Do not send prefetch for ptr, if ptr is on last prefetch cacheline
+	 *
+	 * No prefetch is controlled with via opt_nprefetch_cache_fill(==0)
+	 */
+	prefetch_fill_mode_cl           = 0,
+
+	/*
+	 * Do not send prefetch for ptr, if ptr is on last prefetch cacheline
+	 * or cacheline adjacent to the last prefetched cacheline
+	 */
+	prefetch_fill_mode_adjacent_cl  = 1,
+
+	/*
+	 * Do not send prefetch for ptr, if ptr is on the same page as 
+	 * the last one prefetched
+	 */
+	prefetch_fill_mode_page  = 2,
+	prefetch_fill_mode_count  = prefetch_fill_mode_page + 1
+} prefetch_fill_mode_t;
+
+#define PREFETCH_FILL_MODE_DEFAULT	prefetch_fill_mode_cl
+
+extern unsigned opt_nprefetch_cache_fill;
+extern prefetch_fill_mode_t opt_prefetch_fill_mode;
+extern const char *const prefetch_fill_mode_names[];
+
 /*
  * This lives inside the cache_bin (for locality reasons), and is initialized
  * alongside it, but is otherwise not modified by any cache bin operations.
@@ -664,6 +695,20 @@ cache_bin_init_ptr_array_for_fill(cache_bin_t *bin, cache_bin_ptr_array_t *arr,
 	cache_bin_assert_empty(bin);
 	arr->ptr = cache_bin_empty_position_get(bin) - nfill;
 }
+
+/*
+ * Internal.
+ *
+ * Prefetch pointers from an array.
+ */
+void
+cache_bin_ptr_array_prefetch(cache_bin_ptr_array_t *ptrs, uint16_t n);
+
+#ifdef JEMALLOC_JET
+typedef void (*test_prefetch_hook_t)(void *ptr, bool is_write);
+test_prefetch_hook_t
+cache_bin_prefetch_hook_set(test_prefetch_hook_t);
+#endif
 
 /*
  * While nfill in cache_bin_init_ptr_array_for_fill is the number we *intend* to

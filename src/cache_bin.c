@@ -7,6 +7,15 @@
 
 const uintptr_t disabled_bin = JUNK_ADDR;
 
+unsigned opt_nprefetch_cache_fill = NPREFETCH_CACHE_FILL_DEFAULT;
+
+const char *const prefetch_fill_mode_names[] = {
+	"cacheline",
+	"adjacent_cacheline",
+	"page"
+};
+prefetch_fill_mode_t opt_prefetch_fill_mode = PREFETCH_FILL_MODE_DEFAULT;
+
 void
 cache_bin_info_init(cache_bin_info_t *info,
     cache_bin_sz_t ncached_max) {
@@ -116,4 +125,74 @@ cache_bin_init_disabled(cache_bin_t *bin, cache_bin_sz_t ncached_max) {
 	cache_bin_init(bin, &fake_info, (void *)fake_stack, &fake_offset);
 	cache_bin_info_init(&bin->bin_info, ncached_max);
 	assert(fake_offset == 0);
+}
+
+#ifdef JEMALLOC_JET
+static test_prefetch_hook_t test_prefetch_hook = NULL;
+test_prefetch_hook_t
+cache_bin_prefetch_hook_set(test_prefetch_hook_t f) {
+	test_prefetch_hook_t old = test_prefetch_hook;
+	test_prefetch_hook = f;
+	return old;
+}
+#endif
+
+static inline void
+prefetch_one_w(void *ptr) {
+#ifdef JEMALLOC_JET
+    if (test_prefetch_hook) {
+	    test_prefetch_hook(ptr, /* write */ true);
+	} else {
+		util_prefetch_write(ptr);
+	}
+#else
+    util_prefetch_write(ptr);
+#endif
+}
+
+static inline void
+prefetch_pointers_cl(cache_bin_ptr_array_t *ptrs, uint16_t n, size_t step) {
+    void *last = NULL;
+    for (uint16_t i = 0; i < n; i++) {
+        void *ptr = ptrs->ptr[i];
+        if (ptr < (void *)(((byte_t *)last) + step)) {
+            continue;
+        }
+        last = ptr;
+        /* we expect to write into this memory soon. */
+        prefetch_one_w(ptr);
+    }
+}
+
+static inline void
+prefetch_pointers_page(cache_bin_ptr_array_t *ptrs, int n) {
+    void *last_base = NULL;
+	void *current_base = NULL;
+	for (uint16_t i = 0; i < n; i++) {
+        void *ptr = ptrs->ptr[i];
+		current_base = opt_hpa ? HUGEPAGE_ADDR2BASE(ptr) : ALIGNMENT_ADDR2BASE(ptr, os_page);
+		if (current_base == last_base) {
+			continue;
+		}
+		last_base = current_base;
+        /* we expect to write into this memory soon. */
+        prefetch_one_w(ptr);
+    }
+}
+
+void
+cache_bin_ptr_array_prefetch(cache_bin_ptr_array_t *ptrs, uint16_t filled){
+    if (filled == 0) {
+		return;
+	}
+	uint16_t n = (opt_nprefetch_cache_fill < filled ? opt_nprefetch_cache_fill : filled);
+    /* Assumes that ptrs are valid */
+	if (prefetch_fill_mode_cl == opt_prefetch_fill_mode) {
+		prefetch_pointers_cl(ptrs, n, CACHELINE);
+	} else if (prefetch_fill_mode_adjacent_cl == opt_prefetch_fill_mode) {
+		prefetch_pointers_cl(ptrs, n, CACHELINE * 2); 
+	} else {
+		assert(prefetch_fill_mode_page == opt_prefetch_fill_mode);
+		prefetch_pointers_page(ptrs, n);
+	}
 }

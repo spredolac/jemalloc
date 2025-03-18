@@ -379,8 +379,170 @@ TEST_BEGIN(test_cache_bin_stash) {
 }
 TEST_END
 
+
+typedef struct {
+	void *ptr;
+	bool is_write;
+} prefetch_arg_t;
+static prefetch_arg_t prefetch_calls[NPREFETCH_CACHE_FILL_MAX];
+static unsigned nprefetch_calls;
+
+static void
+prefetch_hook(void *p, bool is_write) {
+	prefetch_calls[nprefetch_calls].ptr = p;
+	prefetch_calls[nprefetch_calls].is_write = is_write;
+	++nprefetch_calls;
+}
+
+static void
+reset_prefetch_calls(void) {
+	nprefetch_calls = 0;
+	cache_bin_prefetch_hook_set(prefetch_hook);
+}
+
+TEST_BEGIN(test_cache_bin_array_prefetch_cl) {
+	test_skip_if(CACHELINE < sizeof(void *) * 4);
+
+	opt_prefetch_fill_mode = prefetch_fill_mode_cl;
+	
+
+	CACHE_BIN_PTR_ARRAY_DECLARE(arr, 16);
+	void *storage[16];
+	arr.ptr = storage;
+	arr.n = 16;
+	
+	reset_prefetch_calls();
+	opt_nprefetch_cache_fill = 0;
+	void *fake_address = (void **)0x8badf00d;
+	storage[0] = fake_address;
+	cache_bin_ptr_array_prefetch(&arr, 1);
+	expect_zu_eq(nprefetch_calls, 0, "No calls when opt_nprefetch_cache_fill== 0");
+
+	reset_prefetch_calls();
+	opt_nprefetch_cache_fill = 8;
+	cache_bin_ptr_array_prefetch(&arr, 0);
+	expect_zu_eq(nprefetch_calls, 0, "No calls when filled == 0");
+	
+	reset_prefetch_calls();
+	opt_nprefetch_cache_fill = 8;
+	cache_bin_ptr_array_prefetch(&arr, 0);
+	expect_zu_eq(nprefetch_calls, 0, "No calls when filled == 0");
+
+	reset_prefetch_calls();
+	opt_nprefetch_cache_fill = 8;
+	storage[0] = fake_address;
+	storage[1] = (void *)((byte_t *)fake_address + sizeof(void *));
+	cache_bin_ptr_array_prefetch(&arr, 2);
+	expect_zu_eq(nprefetch_calls, 1, "1 call when filled == 2");
+	expect_ptr_eq(prefetch_calls[0].ptr, fake_address, "prefetch address");
+
+	reset_prefetch_calls();
+	opt_nprefetch_cache_fill = 8;
+	storage[0] = fake_address;
+	void *fake_address2 = (void *)((byte_t *)fake_address + CACHELINE);
+	storage[1] = fake_address2;
+	cache_bin_ptr_array_prefetch(&arr, 2);
+	expect_zu_eq(nprefetch_calls, 2, "More than CL difference, both ptr calls");
+	expect_ptr_eq(prefetch_calls[0].ptr, fake_address, "prefetch address wrong");
+	expect_ptr_eq(prefetch_calls[1].ptr, fake_address2, "second call missing");
+
+	reset_prefetch_calls();
+	opt_nprefetch_cache_fill = 1;
+	storage[0] = fake_address;
+	storage[1] = fake_address2;
+	cache_bin_ptr_array_prefetch(&arr, 2);
+	expect_zu_eq(nprefetch_calls, 1, "Clip to opt_nprefetch_cache_fill");
+	expect_ptr_eq(prefetch_calls[0].ptr, fake_address, "prefetch address wrong");
+
+	cache_bin_prefetch_hook_set(NULL);	
+}
+TEST_END
+
+TEST_BEGIN(test_cache_bin_array_prefetch_adj_cl) {
+	test_skip_if(CACHELINE < sizeof(void *) * 4);
+
+	opt_prefetch_fill_mode = prefetch_fill_mode_adjacent_cl;
+	
+	CACHE_BIN_PTR_ARRAY_DECLARE(arr, 16);
+	void *storage[16];
+	arr.ptr = storage;
+	arr.n = 16;
+
+	/* More than one cacheline difference, but less than two
+	* is still not a separate prefetch
+	*/
+	reset_prefetch_calls();
+	opt_nprefetch_cache_fill = 64;
+	void *fake_address = (void **)0x8badf00d;
+	storage[0] = fake_address;
+	storage[1] = (void *)((byte_t *)fake_address + CACHELINE);
+	cache_bin_ptr_array_prefetch(&arr, 2);
+	expect_zu_eq(nprefetch_calls, 1, "Single call when ptrs less than 2 CL apart");
+	expect_ptr_eq(prefetch_calls[0].ptr, fake_address, "prefetch address wrong");
+
+	reset_prefetch_calls();
+	opt_nprefetch_cache_fill = 64;
+	storage[0] = fake_address;
+	void *fake_address2 = (void *)((byte_t *)fake_address + CACHELINE * 2);
+	storage[1] = fake_address2;
+	cache_bin_ptr_array_prefetch(&arr, 2);
+	expect_zu_eq(nprefetch_calls, 2, "More than 2*CL difference, both ptr calls");
+	expect_ptr_eq(prefetch_calls[0].ptr, fake_address, "prefetch address wrong");
+	expect_ptr_eq(prefetch_calls[1].ptr, fake_address2, "second call missing");
+
+	cache_bin_prefetch_hook_set(NULL);	
+}
+TEST_END
+
+static void *
+page_base_addr(void *p) {
+     return opt_hpa ? HUGEPAGE_ADDR2BASE(p) : ALIGNMENT_ADDR2BASE(p, os_page);
+}
+
+TEST_BEGIN(test_cache_bin_array_prefetch_page) {
+	
+	opt_prefetch_fill_mode = prefetch_fill_mode_page;
+
+	CACHE_BIN_PTR_ARRAY_DECLARE(arr, 16);
+	void *storage[16];
+	arr.ptr = storage;
+	arr.n = 16;
+	
+	reset_prefetch_calls();
+	opt_nprefetch_cache_fill = 4;
+	void *fake_address = (void **)0x8badf00d;
+	void *fake_base = page_base_addr(fake_address);
+	void *fake_address2 = (void *)((byte_t *)fake_base + sizeof(void *));
+	void *fake_base2 = page_base_addr(fake_address2);
+	expect_ptr_eq(fake_base, fake_base2, "Poor test setup");
+	storage[0] = fake_address;
+	storage[1] = fake_address2;
+	cache_bin_ptr_array_prefetch(&arr, 2);
+	expect_zu_eq(nprefetch_calls, 1, "Single call when ptrs in same page");
+	expect_ptr_eq(prefetch_calls[0].ptr, fake_address, "prefetch address wrong");
+
+	reset_prefetch_calls();
+	opt_nprefetch_cache_fill = 4;
+	size_t offset = opt_hpa ? HUGEPAGE : os_page;
+	fake_address2 = (void *)((byte_t *)fake_base + offset + sizeof(void *));
+	fake_base2 = page_base_addr(fake_address2);
+	expect_ptr_ne(fake_base, fake_base2, "Poor test setup");
+	storage[0] = fake_address;
+	storage[1] = fake_address2;
+	cache_bin_ptr_array_prefetch(&arr, 2);
+	expect_zu_eq(nprefetch_calls, 2, "Two calls when ptrs not on the same page");
+	expect_ptr_eq(prefetch_calls[0].ptr, fake_address, "prefetch address wrong");
+	expect_ptr_eq(prefetch_calls[1].ptr, fake_address2, "second call missing");
+
+	cache_bin_prefetch_hook_set(NULL);	
+}
+TEST_END
+
 int
 main(void) {
 	return test(test_cache_bin,
-		test_cache_bin_stash);
+		test_cache_bin_stash,
+		test_cache_bin_array_prefetch_cl,
+		test_cache_bin_array_prefetch_adj_cl,
+		test_cache_bin_array_prefetch_page);
 }
