@@ -407,6 +407,36 @@ cache_bin_low_water_adjust(cache_bin_t *bin) {
 	}
 }
 
+#ifdef JEMALLOC_JET
+typedef void (*test_prefetch_hook_t)(void *ptr, bool is_write);
+test_prefetch_hook_t
+cache_bin_prefetch_hook_set(test_prefetch_hook_t);
+extern test_prefetch_hook_t cache_bin_prefetch_test_hook;
+#endif
+
+#ifdef JEMALLOC_EXPERIMENTAL_FASTPATH_PREFETCH
+/* We pad each non-disabled bin with this many slots 
+*  and we prefetch the pointer that is this many slots
+*  ahead of the one being returned on the fast path 
+*/
+#define CACHE_BIN_PREFETCH_STEP 2
+
+#endif /* JEMALLOC_EXPERIMENTAL_FASTPATH_PREFETCH */
+
+static inline void
+prefetch_one_w(void *ptr) {
+#ifdef JEMALLOC_JET
+    if (cache_bin_prefetch_test_hook) {
+	    cache_bin_prefetch_test_hook(ptr, /* write */ true);
+	} else {
+		/* Still want to exercise the code in other tests */
+		util_prefetch_write(ptr);
+	}
+#else
+    util_prefetch_write(ptr);
+#endif /* JEMALLOC_JET */
+}
+
 JEMALLOC_ALWAYS_INLINE void *
 cache_bin_alloc_impl(cache_bin_t *bin, bool *success, bool adjust_low_water) {
 	/*
@@ -430,6 +460,13 @@ cache_bin_alloc_impl(cache_bin_t *bin, bool *success, bool adjust_low_water) {
 	 * we know we're non-empty.
 	 */
 	if (likely(low_bits != bin->low_bits_low_water)) {
+
+#ifdef JEMALLOC_EXPERIMENTAL_FASTPATH_PREFETCH
+		/* Safe to look head + SKIP as we pad with valid addresses
+		 *    mapped to physical page to avoid the penalty
+		 */
+		prefetch_one_w(*(bin->stack_head + CACHE_BIN_PREFETCH_STEP));
+#endif
 		bin->stack_head = new_head;
 		*success = true;
 		return ret;
@@ -703,12 +740,6 @@ cache_bin_init_ptr_array_for_fill(cache_bin_t *bin, cache_bin_ptr_array_t *arr,
  */
 void
 cache_bin_ptr_array_prefetch(cache_bin_ptr_array_t *ptrs, uint16_t n);
-
-#ifdef JEMALLOC_JET
-typedef void (*test_prefetch_hook_t)(void *ptr, bool is_write);
-test_prefetch_hook_t
-cache_bin_prefetch_hook_set(test_prefetch_hook_t);
-#endif
 
 /*
  * While nfill in cache_bin_init_ptr_array_for_fill is the number we *intend* to

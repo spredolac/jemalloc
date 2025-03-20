@@ -1,5 +1,13 @@
 #include "test/jemalloc_test.h"
 
+static bool 
+experimental_fast_prefetch_enabled =
+#ifdef JEMALLOC_EXPERIMENTAL_FASTPATH_PREFETCH
+true;
+#else
+false;
+#endif
+
 static void
 do_fill_test(cache_bin_t *bin, void **ptrs, cache_bin_sz_t ncached_max,
     cache_bin_sz_t nfill_attempt, cache_bin_sz_t nfill_succeed) {
@@ -500,7 +508,6 @@ page_base_addr(void *p) {
 }
 
 TEST_BEGIN(test_cache_bin_array_prefetch_page) {
-	
 	opt_prefetch_fill_mode = prefetch_fill_mode_page;
 
 	CACHE_BIN_PTR_ARRAY_DECLARE(arr, 16);
@@ -538,11 +545,120 @@ TEST_BEGIN(test_cache_bin_array_prefetch_page) {
 }
 TEST_END
 
+TEST_BEGIN(test_cache_bin_alloc_easy_prefetch_disabled) {
+	/* Only makes sense if compiled with experimental fast prefetch support */
+	test_skip_if(experimental_fast_prefetch_enabled);
+	
+	const int ncached_max = 10;
+	bool success;
+	void *ptr;
+
+	cache_bin_info_t info;
+	cache_bin_info_init(&info, ncached_max);
+	cache_bin_t bin;
+	test_bin_init(&bin, &info);
+
+	/* Initialize to empty; should then have 0 elements. */
+	expect_d_eq(ncached_max, cache_bin_ncached_max_get(&bin), "");
+	expect_true(cache_bin_ncached_get_local(&bin) == 0, "");
+	
+	/*
+	 * We allocate fully, so we can test 
+	 * prefetch at the end of the cache bin.
+	 */
+	void **ptrs = mallocx(sizeof(void *) * (ncached_max + 1), 0);
+	assert_ptr_not_null(ptrs, "Unexpected mallocx failure");
+	for  (cache_bin_sz_t i = 0; i < ncached_max; i++) {
+		expect_true(cache_bin_ncached_get_local(&bin) == i, "");
+		success = cache_bin_dalloc_easy(&bin, &ptrs[i]);
+	}
+	expect_true(cache_bin_ncached_get_local(&bin) == ncached_max,
+	    "");
+	
+	reset_prefetch_calls();
+	for  (cache_bin_sz_t i = 0; i < ncached_max; i++) {
+		ptr = cache_bin_alloc_easy(&bin, &success);
+		expect_true(success, "");
+		expect_ptr_eq(ptr, &ptrs[ncached_max - i - 1], "");
+	}
+	/* Check prefetch calls */
+	expect_zu_eq(nprefetch_calls, 0, "No calls when prefetch disabled");
+
+	free(ptrs);
+	cache_bin_prefetch_hook_set(NULL);	
+}
+TEST_END
+
+TEST_BEGIN(test_cache_bin_alloc_easy_prefetch_enabled) {
+	/* Only makes sense when experimental prefetch support enabled */
+	test_skip_if(!experimental_fast_prefetch_enabled);
+#ifdef CACHE_BIN_PREFETCH_STEP
+	const int step = CACHE_BIN_PREFETCH_STEP;
+#else
+	/* Does not matter as test is skipped */
+	const int step = 12345;
+#endif
+
+	const int ncached_max = 10;
+	bool success;
+	void *ptr;
+
+	cache_bin_info_t info;
+	cache_bin_info_init(&info, ncached_max);
+	cache_bin_t bin;
+	test_bin_init(&bin, &info);
+
+	/* Initialize to empty; should then have 0 elements. */
+	expect_d_eq(ncached_max, cache_bin_ncached_max_get(&bin), "");
+	expect_true(cache_bin_ncached_get_local(&bin) == 0, "");
+	
+	/*
+	 * We allocate fully, so we can test 
+	 * prefetch at the end of the cache bin.
+	 */
+	void **ptrs = mallocx(sizeof(void *) * (ncached_max + 1), 0);
+	assert_ptr_not_null(ptrs, "Unexpected mallocx failure");
+	for  (cache_bin_sz_t i = 0; i < ncached_max; i++) {
+		expect_true(cache_bin_ncached_get_local(&bin) == i, "");
+		success = cache_bin_dalloc_easy(&bin, &ptrs[i]);
+	}
+	expect_true(cache_bin_ncached_get_local(&bin) == ncached_max,
+	    "");
+	
+	reset_prefetch_calls();
+	for  (cache_bin_sz_t i = 0; i < ncached_max; i++) {
+		ptr = cache_bin_alloc_easy(&bin, &success);
+		expect_true(success, "");
+		expect_ptr_eq(ptr, &ptrs[ncached_max - i - 1], "");
+	}
+	/* Check prefetch calls */
+	expect_zu_eq(nprefetch_calls, ncached_max, "Not enough prefetch calls");
+	for  (cache_bin_sz_t i = 0; i < ncached_max - step; i++) {
+		expect_ptr_eq(prefetch_calls[i].ptr,
+		    &ptrs[ncached_max - i - 1 - step], "prefetch address wrong");
+	}
+	
+	/* Empty bin now.  stack_head points one past the "real" slots */
+	expect_true(cache_bin_ncached_get_local(&bin) == 0, "");
+	for (cache_bin_sz_t i = ncached_max - step; i < ncached_max; i++) {
+		void **expected_ptr = bin.stack_head + i - (ncached_max - step);
+		expect_ptr_eq(prefetch_calls[i].ptr, expected_ptr,
+			"prefetch address wrong for out of boundary");
+		expect_ptr_eq(expected_ptr, *expected_ptr, "Content is its own address");		
+	}
+
+	free(ptrs);
+	cache_bin_prefetch_hook_set(NULL);	
+}
+TEST_END
+
 int
 main(void) {
 	return test(test_cache_bin,
 		test_cache_bin_stash,
 		test_cache_bin_array_prefetch_cl,
 		test_cache_bin_array_prefetch_adj_cl,
-		test_cache_bin_array_prefetch_page);
+		test_cache_bin_array_prefetch_page,
+		test_cache_bin_alloc_easy_prefetch_disabled,
+		test_cache_bin_alloc_easy_prefetch_enabled);
 }
