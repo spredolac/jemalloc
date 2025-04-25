@@ -130,6 +130,11 @@ pa_shard_ehooks_get(pa_shard_t *shard) {
 	return base_ehooks_get(shard->base);
 }
 
+static inline bool
+pa_shard_uses_hpa(pa_shard_t *shard) {
+	return atomic_load_b(&shard->use_hpa, ATOMIC_RELAXED);
+}
+
 /* Returns true on error. */
 bool pa_central_init(pa_central_t *central, base_t *base, bool hpa,
     const hpa_hooks_t *hpa_hooks);

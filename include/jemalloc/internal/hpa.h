@@ -154,6 +154,23 @@ struct hpa_shard_s {
 };
 
 bool hpa_hugepage_size_exceeds_limit(void);
+typedef enum {
+	hpa_purge_policy_per_shard_ratio,
+	hpa_purge_policy_global_ratio
+} hpa_purge_policy_t;
+extern hpa_purge_policy_t opt_hpa_purge_policy;
+
+/* Background thread will use this to apply purging policy */
+struct hpa_purge_analytics_s {
+	psset_stats_t stats;
+	hpa_shard_t *shard;
+        fxp_t dirty_mult;
+	size_t arena_ind;
+	size_t peak_max;
+	bool hugify_blocked_by_dirty;
+};
+typedef struct hpa_purge_analytics_s hpa_purge_analytics_t;
+
 /*
  * Whether or not the HPA can be used given the current configuration.  This is
  * is not necessarily a guarantee that it backs its allocations by hugepages,
@@ -189,5 +206,11 @@ void hpa_shard_prefork3(tsdn_t *tsdn, hpa_shard_t *shard);
 void hpa_shard_prefork4(tsdn_t *tsdn, hpa_shard_t *shard);
 void hpa_shard_postfork_parent(tsdn_t *tsdn, hpa_shard_t *shard);
 void hpa_shard_postfork_child(tsdn_t *tsdn, hpa_shard_t *shard);
+
+bool hpa_purge_analytics_read(
+  tsdn_t *tsdn, hpa_shard_t *shard, hpa_purge_analytics_t *panalytics);
+bool
+hpa_purge_analyze(hpa_purge_analytics_t *panalytics, size_t n, size_t *target);
+
 
 #endif /* JEMALLOC_INTERNAL_HPA_H */

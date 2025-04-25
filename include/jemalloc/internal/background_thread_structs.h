@@ -55,6 +55,8 @@ struct background_thread_info_s {
 	uint64_t		tot_n_runs;
 	/* Stats: total sleep time since started. */
 	nstime_t		tot_sleep_time;
+	hpa_purge_analytics_t *purge_analytics_p;
+	size_t npurge_anlaytics_capacity;
 };
 typedef struct background_thread_info_s background_thread_info_t;
 

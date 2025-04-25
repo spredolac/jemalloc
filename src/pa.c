@@ -98,11 +98,6 @@ pa_shard_reset(tsdn_t *tsdn, pa_shard_t *shard) {
 	}
 }
 
-static bool
-pa_shard_uses_hpa(pa_shard_t *shard) {
-	return atomic_load_b(&shard->use_hpa, ATOMIC_RELAXED);
-}
-
 void
 pa_shard_destroy(tsdn_t *tsdn, pa_shard_t *shard) {
 	pac_destroy(tsdn, &shard->pac);

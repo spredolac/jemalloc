@@ -501,6 +501,9 @@ arena_decay_impl(tsdn_t *tsdn, arena_t *arena, decay_t *decay,
 
 	if (have_background_thread && background_thread_enabled() &&
 	    epoch_advanced && !is_background_thread) {
+			// we probably assume that background thread will do the work
+			// so we don't need to do it here DELETEME
+
 		arena_maybe_do_deferred_work(tsdn, arena, decay, npages_new);
 	}
 
@@ -604,6 +607,7 @@ arena_maybe_do_deferred_work(tsdn_t *tsdn, arena_t *arena, decay_t *decay,
 		background_thread_wakeup_early(info, NULL);
 	} else if (arena_should_decay_early(tsdn, arena, decay, info,
 	    &remaining_sleep, npages_new)) {
+			/* maybe problematic to do it here. Set  */ 
 		info->npages_to_purge_new = 0;
 		background_thread_wakeup_early(info, &remaining_sleep);
 	}

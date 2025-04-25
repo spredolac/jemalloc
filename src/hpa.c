@@ -9,6 +9,8 @@
 
 #define HPA_EDEN_SIZE (128 * HUGEPAGE)
 
+hpa_purge_policy_t opt_hpa_purge_policy = hpa_purge_policy_per_shard_ratio;
+
 static edata_t *hpa_alloc(tsdn_t *tsdn, pai_t *self, size_t size,
     size_t alignment, bool zero, bool guarded, bool frequent_reuse,
     bool *deferred_work_generated);
@@ -703,6 +705,17 @@ hpa_min_purge_interval_passed(tsdn_t *tsdn, hpa_shard_t *shard) {
 	return since_last_purge_ms >= shard->opts.min_purge_interval_ms;
 }
 
+static inline void
+peak_demand_update_if_needed(hpa_shard_t *shard) {
+	if (hpa_peak_demand_tracking_enabled(shard)) {
+		nstime_t now;
+		shard->central->hooks.curtime(&now,
+		    /* first_reading */ true);
+		peak_demand_update(&shard->peak_demand, &now,
+		    psset_nactive(&shard->psset));
+	}
+}
+
 /*
  * Execution of deferred work is forced if it's triggered by an explicit
  * hpa_shard_do_deferred_work() call.
@@ -713,13 +726,7 @@ hpa_shard_maybe_do_deferred_work(tsdn_t *tsdn, hpa_shard_t *shard,
 	malloc_mutex_assert_owner(tsdn, &shard->mtx);
 
 	/* Update active memory demand statistics. */
-	if (hpa_peak_demand_tracking_enabled(shard)) {
-		nstime_t now;
-		shard->central->hooks.curtime(&now,
-		    /* first_reading */ true);
-		peak_demand_update(&shard->peak_demand, &now,
-		    psset_nactive(&shard->psset));
-	}
+	peak_demand_update_if_needed(shard);
 
 	if (!forced && shard->opts.deferral_allowed) {
 		return;
@@ -771,6 +778,91 @@ hpa_shard_maybe_do_deferred_work(tsdn_t *tsdn, hpa_shard_t *shard,
 		malloc_mutex_assert_owner(tsdn, &shard->mtx);
 		nops++;
 	}
+}
+
+static bool
+read_analytics_ratio(tsdn_t *tsdn, hpa_shard_t *shard,
+		       hpa_purge_analytics_t *panalytics) {
+	/* Classic behavior where each shard clears up to the ratio */
+	bool ret = hpa_should_purge(tsdn, shard);
+	panalytics->shard = shard;
+	return ret;	
+}
+
+static bool
+read_analytics_global(tsdn_t *tsdn, hpa_shard_t *shard,
+		       hpa_purge_analytics_t *panalytics) {
+	if (shard->npending_purge > 0) {
+		return false;
+	}
+	panalytics->shard = shard;
+	memcpy(&panalytics->stats, &shard->psset.stats, sizeof(psset_stats_t));
+	panalytics->dirty_mult = shard->opts.dirty_mult;
+	if (hpa_peak_demand_tracking_enabled(shard)) {
+		panalytics->peak_max = peak_demand_nactive_max(&shard->peak_demand);
+	} else {
+		panalytics->peak_max = 0;
+	}
+	panalytics->hugify_blocked_by_dirty =
+	    hpa_hugify_blocked_by_ndirty(tsdn, shard);
+
+        return true;
+}
+
+bool
+hpa_purge_analytics_read(tsdn_t *tsdn, hpa_shard_t *shard,
+			 hpa_purge_analytics_t *panalytics) {
+	hpa_do_consistency_checks(shard);
+	bool ret = false;
+
+	malloc_mutex_lock(tsdn, &shard->mtx);
+
+	/* TODO ask Qi if we need to resepct max number of pages (which is per shard now)
+	 * or if that can be some property of policies. Comment suggests that it was some buggy
+	 * implementation that tried to preserve old behavior ?
+	 */
+
+	/*
+	 * Make sure we respect purge interval setting and don't purge
+	 * too frequently.
+	 */
+	if (hpa_min_purge_interval_passed(tsdn, shard)) {
+		/* Update peak demand before reading stats */
+		peak_demand_update_if_needed(shard);
+
+		if (opt_hpa_purge_policy == hpa_purge_policy_per_shard_ratio) {
+			ret = read_analytics_ratio(tsdn, shard, panalytics);
+		} else if (opt_hpa_purge_policy == hpa_purge_policy_global_ratio) {
+			ret = read_analytics_global(tsdn, shard, panalytics);
+		}
+	}
+
+	malloc_mutex_unlock(tsdn, &shard->mtx);
+	return ret;
+}
+
+bool
+hpa_purge_analyze(hpa_purge_analytics_t *panalytics, size_t n, size_t *target) {
+	size_t total_dirty = 0;
+	size_t total_active = 0;
+	size_t total_peak = 0;
+
+	assert(n>0);
+	if (opt_hpa_purge_policy == hpa_purge_policy_global_ratio) {
+		for (size_t i=0; i<n; ++i) {
+			total_active += panalytics[i].stats.merged.nactive;
+			total_dirty += panalytics[i].stats.merged.ndirty;
+			total_peak += panalytics[i].peak_max;
+		}
+		size_t active_max = total_active > total_peak ? total_active : total_peak;
+		size_t slack = fxp_mul_frac(active_max, panalytics[0].dirty_mult);
+		size_t dirty_max = active_max + slack - total_active;
+		if (total_dirty > dirty_max) {
+			*target = total_dirty - dirty_max;
+			return true;
+		}
+	}
+	return false;
 }
 
 static edata_t *
