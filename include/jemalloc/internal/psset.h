@@ -102,7 +102,7 @@ struct psset_s {
 	 * to purge them (with later indices indicating slabs we want to purge
 	 * more).
 	 */
-	hpdata_purge_list_t to_purge[PSSET_NPURGE_LISTS];
+	hpdata_purge_heap_t to_purge[PSSET_NPURGE_LISTS];
 	/* Bitmap for which set bits correspond to non-empty purge lists. */
 	fb_group_t purge_bitmap[FB_NGROUPS(PSSET_NPURGE_LISTS)];
 	/* Slabs which are available to be hugified. */
@@ -123,6 +123,12 @@ void psset_update_end(psset_t *psset, hpdata_t *ps);
 hpdata_t *psset_pick_alloc(psset_t *psset, size_t size);
 /* Pick one to purge. */
 hpdata_t *psset_pick_purge(psset_t *psset);
+/* Pick one to purge respecting the purge_delay */
+hpdata_t *psset_pick_purge_with_delay(
+    psset_t *psset, const nstime_t *now, uint64_t purge_delay_ms);
+uint64_t psset_ms_until_purge(
+	psset_t *psset, const nstime_t *now, uint64_t purge_delay_ms);
+
 /* Pick one to hugify. */
 hpdata_t *psset_pick_hugify(psset_t *psset);
 

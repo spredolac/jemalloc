@@ -147,6 +147,11 @@ struct hpa_shard_s {
 	 * Last time we performed purge on this shard.
 	 */
 	nstime_t last_purge;
+
+	/*
+	 * Last time we attempted purge or hugification work on a shard.
+	 */
+	nstime_t last_attempt;
 };
 
 bool hpa_hugepage_size_exceeds_limit(void);

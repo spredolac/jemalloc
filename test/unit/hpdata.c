@@ -5,7 +5,8 @@
 
 TEST_BEGIN(test_reserve_alloc) {
 	hpdata_t hpdata;
-	hpdata_init(&hpdata, HPDATA_ADDR, HPDATA_AGE);
+	bool is_huge = false;
+	hpdata_init(&hpdata, HPDATA_ADDR, HPDATA_AGE, is_huge);
 
 	/* Allocating a page at a time, we should do first fit. */
 	for (size_t i = 0; i < HUGEPAGE_PAGES; i++) {
@@ -57,7 +58,8 @@ TEST_END
 
 TEST_BEGIN(test_purge_simple) {
 	hpdata_t hpdata;
-	hpdata_init(&hpdata, HPDATA_ADDR, HPDATA_AGE);
+	bool is_huge = false;
+	hpdata_init(&hpdata, HPDATA_ADDR, HPDATA_AGE, is_huge);
 
 	void *alloc = hpdata_reserve_alloc(&hpdata, HUGEPAGE_PAGES / 2 * PAGE);
 	expect_ptr_eq(alloc, HPDATA_ADDR, "");
@@ -101,7 +103,8 @@ TEST_END
  */
 TEST_BEGIN(test_purge_intervening_dalloc) {
 	hpdata_t hpdata;
-	hpdata_init(&hpdata, HPDATA_ADDR, HPDATA_AGE);
+	bool is_huge = false;
+	hpdata_init(&hpdata, HPDATA_ADDR, HPDATA_AGE, is_huge);
 
 	/* Allocate the first 3/4 of the pages. */
 	void *alloc = hpdata_reserve_alloc(
@@ -164,7 +167,8 @@ TEST_BEGIN(test_purge_over_retained) {
 	size_t purge_size;
 
 	hpdata_t hpdata;
-	hpdata_init(&hpdata, HPDATA_ADDR, HPDATA_AGE);
+	bool is_huge = false;
+	hpdata_init(&hpdata, HPDATA_ADDR, HPDATA_AGE, is_huge);
 
 	/* Allocate the first 3/4 of the pages. */
 	void *alloc = hpdata_reserve_alloc(
@@ -238,7 +242,8 @@ TEST_END
 
 TEST_BEGIN(test_hugify) {
 	hpdata_t hpdata;
-	hpdata_init(&hpdata, HPDATA_ADDR, HPDATA_AGE);
+	bool is_huge = false;
+	hpdata_init(&hpdata, HPDATA_ADDR, HPDATA_AGE, is_huge);
 
 	void *alloc = hpdata_reserve_alloc(&hpdata, HUGEPAGE / 2);
 	expect_ptr_eq(alloc, HPDATA_ADDR, "");

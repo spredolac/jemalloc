@@ -16,12 +16,31 @@ hpdata_age_comp(const hpdata_t *a, const hpdata_t *b) {
 	return (a_age > b_age) - (a_age < b_age);
 }
 
-ph_gen(, hpdata_age_heap, hpdata_t, age_link, hpdata_age_comp)
+static int
+hpdata_purge_comp(const hpdata_t *a, const hpdata_t *b) {
+	/* If purge_delay==0, this will be zero. */
+	const nstime_t *a_purge_tm = hpdata_time_purge_allowed_get(a);
+	const nstime_t *b_purge_tm = hpdata_time_purge_allowed_get(b);
+	int tm_cmp = nstime_compare(a_purge_tm, b_purge_tm);
+	if (tm_cmp) {
+		return tm_cmp;
+	}
 
-    void hpdata_init(hpdata_t *hpdata, void *addr, uint64_t age) {
+	/*
+	 * There are few choices here: purge dirtier, or less active, or newer.
+	 * We chose newer as it mirrors the alloc, but testing on microbenchmark
+	 * will be needed.
+	 */
+	return hpdata_age_comp(b, a);
+}
+
+ph_gen(, hpdata_age_heap, hpdata_t, age_link, hpdata_age_comp)
+ph_gen(, hpdata_purge_heap, hpdata_t, purge_link, hpdata_purge_comp)
+
+void hpdata_init(hpdata_t *hpdata, void *addr, uint64_t age, bool is_huge) {
 	hpdata_addr_set(hpdata, addr);
 	hpdata_age_set(hpdata, age);
-	hpdata->h_huge = false;
+	hpdata->h_huge = is_huge;
 	hpdata->h_alloc_allowed = true;
 	hpdata->h_in_psset_alloc_container = false;
 	hpdata->h_purge_allowed = false;
@@ -34,8 +53,15 @@ ph_gen(, hpdata_age_heap, hpdata_t, age_link, hpdata_age_comp)
 	hpdata_longest_free_range_set(hpdata, HUGEPAGE_PAGES);
 	hpdata->h_nactive = 0;
 	fb_init(hpdata->active_pages, HUGEPAGE_PAGES);
-	hpdata->h_ntouched = 0;
-	fb_init(hpdata->touched_pages, HUGEPAGE_PAGES);
+	if (is_huge) {
+		fb_set_range(hpdata->touched_pages, HUGEPAGE_PAGES, 0,
+			     HUGEPAGE_PAGES);
+		hpdata->h_ntouched = HUGEPAGE_PAGES;
+	} else {
+		fb_init(hpdata->touched_pages, HUGEPAGE_PAGES);
+		hpdata->h_ntouched = 0;
+	}
+	nstime_init_zero(&hpdata->h_time_purge_allowed);
 
 	hpdata_assert_consistent(hpdata);
 }

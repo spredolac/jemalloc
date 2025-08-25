@@ -46,7 +46,7 @@ struct hpa_shard_opts_s {
 	uint64_t hugify_delay_ms;
 
 	/*
-	 * Hugify pages synchronously.
+	 * Hugify pages synchronously (using MADV_COLLAPSE).
 	 */
 	bool hugify_sync;
 
@@ -59,6 +59,33 @@ struct hpa_shard_opts_s {
 	 * Maximum number of hugepages to purge on each purging attempt.
 	 */
 	ssize_t experimental_max_purge_nhp;
+
+	/*
+	 * When the number of inactive bytes in a hugepage is >=
+	 * purge_threshold, the page is purgable.  Setting this to 1 will allow
+	 * every page to be purged, while setting it to HUGEPAGE would only
+	 * purge completely empty pages.  Depending on your kernel settings
+	 * purging from non-empty hugepage may result in loss of performance.
+	 */
+	size_t purge_threshold;
+
+	/*
+	 * How long does HP page need to be eligible for purging before it gets
+	 * purged.  Setting this to larger number would give better chance of
+	 * reusing that memory.
+	 */
+	uint64_t purge_delay_ms;
+
+	/*
+	 * If page should start as huge (instead of waiting to for hugification
+	 * threshold to be reached).  This allows us to utilize HP immediately
+	 * and have similar behavior whether the thp setting is 'always' or
+	 * 'madvise'.  When using this option you probably want to purge less
+	 * aggressively: either no purge at all (dirty_mult=-1), or purge only
+	 * empty pages (purge_threshold=HUGEPAGE) with some delay that allows
+	 * their reuse (for example the period between memory peaks).
+	 */
+        bool start_as_huge;
 };
 
 /* clang-format off */
@@ -84,7 +111,13 @@ struct hpa_shard_opts_s {
 	/* min_purge_interval_ms */					\
 	5 * 1000,							\
 	/* experimental_max_purge_nhp */				\
-	-1								\
+	-1,      							\
+	/* size_t purge_threshold */					\
+	1,								\
+	/* purge_delay_ms */             				\
+	0,  								\
+	/* start_as_huge */                    				\
+	false								\
 }
 /* clang-format on */
 

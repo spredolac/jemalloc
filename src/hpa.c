@@ -96,7 +96,7 @@ hpa_alloc_ps(tsdn_t *tsdn, hpa_central_t *central) {
 
 static hpdata_t *
 hpa_central_extract(tsdn_t *tsdn, hpa_central_t *central, size_t size,
-    uint64_t age, bool *oom) {
+    uint64_t age, bool start_as_huge, bool *oom) {
 	/* Don't yet support big allocations; these should get filtered out. */
 	assert(size <= HUGEPAGE);
 	/*
@@ -119,7 +119,7 @@ hpa_central_extract(tsdn_t *tsdn, hpa_central_t *central, size_t size,
 			malloc_mutex_unlock(tsdn, &central->grow_mtx);
 			return NULL;
 		}
-		hpdata_init(ps, central->eden, age);
+		hpdata_init(ps, central->eden, age, start_as_huge);
 		central->eden = NULL;
 		central->eden_len = 0;
 		malloc_mutex_unlock(tsdn, &central->grow_mtx);
@@ -144,6 +144,15 @@ hpa_central_extract(tsdn_t *tsdn, hpa_central_t *central, size_t size,
 			*oom = true;
 			malloc_mutex_unlock(tsdn, &central->grow_mtx);
 			return NULL;
+		} else if (start_as_huge) {
+			/*
+			 * && init_system_thp_mode == thp_mode_default
+			 * may be needed here, and either respecting never
+			 * or demanding explicit collpase with never,
+			 * or doing nothing overall
+			 */
+			central->hooks.hugify(new_eden, HPA_EDEN_SIZE,
+					      /* sync */ false);
 		}
 		ps = hpa_alloc_ps(tsdn, central);
 		if (ps == NULL) {
@@ -169,7 +178,7 @@ hpa_central_extract(tsdn_t *tsdn, hpa_central_t *central, size_t size,
 	assert(central->eden_len % HUGEPAGE == 0);
 	assert(HUGEPAGE_ADDR2BASE(central->eden) == central->eden);
 
-	hpdata_init(ps, central->eden, age);
+	hpdata_init(ps, central->eden, age, start_as_huge);
 
 	char *eden_char = (char *)central->eden;
 	eden_char += HUGEPAGE;
@@ -212,6 +221,7 @@ hpa_shard_init(hpa_shard_t *shard, hpa_central_t *central, emap_t *emap,
 
 	shard->npending_purge = 0;
 	nstime_init_zero(&shard->last_purge);
+	nstime_init_zero(&shard->last_attempt);
 
 	shard->stats.npurge_passes = 0;
 	shard->stats.npurges = 0;
@@ -284,6 +294,30 @@ hpa_good_hugification_candidate(hpa_shard_t *shard, hpdata_t *ps) {
 	    >= shard->opts.hugification_threshold;
 }
 
+static bool
+hpa_good_purge_candidate(hpa_shard_t *shard, hpdata_t *ps) {
+	if (shard->opts.dirty_mult == (fxp_t) -1) {
+		 /*
+		  * No purge needed.  This would need to be removed if we want
+		  * to allow for it to change after shard is created and to be
+		  * applied immediately, but the cost is that we will be
+		  * maintaing the list of purgable pages.
+		  */
+		return false;
+	}
+	size_t ndirty = hpdata_ndirty_get(ps);
+	if (ndirty > 0 && hpdata_empty(ps)) {
+		/* Empty page is a good candidate */
+		return true;
+	}
+	/*
+	 * Note that this needs to be >= rather than just >, because of the
+	 * important special case in which the purge threshold is exactly
+	 * HUGEPAGE dirty.
+	 */
+	return ndirty * PAGE >= shard->opts.purge_threshold;
+}
+
 static size_t
 hpa_adjusted_ndirty(tsdn_t *tsdn, hpa_shard_t *shard) {
 	malloc_mutex_assert_owner(tsdn, &shard->mtx);
@@ -315,6 +349,17 @@ hpa_hugify_blocked_by_ndirty(tsdn_t *tsdn, hpa_shard_t *shard) {
 static bool
 hpa_should_purge(tsdn_t *tsdn, hpa_shard_t *shard) {
 	malloc_mutex_assert_owner(tsdn, &shard->mtx);
+	/*
+	 * The page that is purgable may be delayed, but we just want to know
+	 * if there is a need for bg thread to wake up in the future. We treat
+	 * purgability constraint for purge_threshold as stronger than
+	 * dirty_mult, meaning if no page meets purge_threshold, it does not
+	 * matter that we are above dirty_mult.
+	 */ 
+	hpdata_t *ps = psset_pick_purge(&shard->psset);
+	if (ps == NULL) {
+		return false;
+	}
 	if (hpa_adjusted_ndirty(tsdn, shard) > hpa_ndirty_max(tsdn, shard)) {
 		return true;
 	}
@@ -355,12 +400,29 @@ hpa_update_purge_hugify_eligibility(
 	 * allocator's end at all; we just try to pack allocations in a
 	 * hugepage-friendly manner and let the OS hugify in the background.
 	 */
-	hpdata_purge_allowed_set(ps, hpdata_ndirty_get(ps) > 0);
 	if (hpa_good_hugification_candidate(shard, ps)
 	    && !hpdata_huge_get(ps)) {
 		nstime_t now;
 		shard->central->hooks.curtime(&now, /* first_reading */ true);
 		hpdata_allow_hugify(ps, now);
+        }
+
+	if (!hpdata_purge_allowed_get(ps) &&
+	    hpa_good_purge_candidate(shard, ps)) {
+		hpdata_purge_allowed_set(ps, true);
+		if (shard->opts.purge_delay_ms > 0) {
+			nstime_t now;
+			shard->central->hooks.curtime(
+				&now, /* first_reading */ true);
+			hpdata_time_purge_allowed_set(ps, &now);
+		}
+	} else if (hpdata_purge_allowed_get(ps) &&
+		   !hpa_good_purge_candidate(shard, ps)) {
+		/*
+		 * Once it drops below the purge threshold it was used, so
+		 * reset the purging.
+		 */
+		hpdata_purge_allowed_set(ps, false);
 	}
 	/*
 	 * Once a hugepage has become eligible for hugification, we don't mark
@@ -452,8 +514,12 @@ hpa_purge_actual_unlocked(
  * If there was a page to purge its purge state is initialized
  */
 static inline size_t
-hpa_purge_start_hp(hpa_purge_batch_t *b, psset_t *psset) {
-	hpdata_t *to_purge = psset_pick_purge(psset);
+hpa_purge_start_hp(hpa_purge_batch_t *b, psset_t *psset,
+		   const nstime_t *now, uint64_t purge_delay_ms) {
+	hpdata_t *to_purge = purge_delay_ms > 0 ?
+	    psset_pick_purge_with_delay(psset, now, purge_delay_ms) :
+	    psset_pick_purge(psset);
+
 	if (to_purge == NULL) {
 		return 0;
 	}
@@ -562,7 +628,9 @@ hpa_purge(tsdn_t *tsdn, hpa_shard_t *shard, size_t max_hp) {
 		while (
 		    !hpa_batch_full(&batch) && hpa_should_purge(tsdn, shard)) {
 			size_t ndirty = hpa_purge_start_hp(
-			    &batch, &shard->psset);
+			    &batch, &shard->psset,
+			    &shard->last_attempt,
+			    shard->opts.purge_delay_ms);
 			if (ndirty == 0) {
 				break;
 			}
@@ -658,8 +726,8 @@ hpa_try_hugify(tsdn_t *tsdn, hpa_shard_t *shard) {
 static bool
 hpa_min_purge_interval_passed(tsdn_t *tsdn, hpa_shard_t *shard) {
 	malloc_mutex_assert_owner(tsdn, &shard->mtx);
-	uint64_t since_last_purge_ms = shard->central->hooks.ms_since(
-	    &shard->last_purge);
+	uint64_t since_last_purge_ms = nstime_ms_between(&shard->last_purge,
+							 &shard->last_attempt);
 	return since_last_purge_ms >= shard->opts.min_purge_interval_ms;
 }
 
@@ -674,11 +742,23 @@ hpa_shard_maybe_do_deferred_work(
 	if (!forced && shard->opts.deferral_allowed) {
 		return;
 	}
+	/*
+	 * Last attempt to work on shard is used to respect various time related
+	 * constraints (min_purge_interval, hugification_delay etc.).  This is
+	 * effectively "now" for current pass.
+	 */
+	shard->central->hooks.curtime(&shard->last_attempt, false);
 
 	/*
 	 * If we're on a background thread, do work so long as there's work to
 	 * be done.  Otherwise, bound latency to not be *too* bad by doing at
 	 * most a small fixed number of operations.
+	 *
+	 * TODO(spredolac) without bg thread, and with limited number of ops
+	 * there is a danger that no new allocation/deallocation arrives and
+	 * that can leave the shard with the work that does not get done.  Same
+	 * story with interval(s)?  Either manual trigger is needed, or explicit
+	 * no purge, or removal of this max_ops limit.
 	 */
 	size_t max_ops = (forced ? (size_t)-1 : 16);
 	size_t nops = 0;
@@ -849,7 +929,8 @@ hpa_alloc_batch_psset(tsdn_t *tsdn, hpa_shard_t *shard, size_t size,
 	 * while we're doing this potentially expensive system call.
 	 */
 	hpdata_t *ps = hpa_central_extract(
-	    tsdn, shard->central, size, shard->age_counter++, &oom);
+	    tsdn, shard->central, size, shard->age_counter++,
+	    shard->opts.start_as_huge, &oom);
 	if (ps == NULL) {
 		malloc_mutex_unlock(tsdn, &shard->grow_mtx);
 		return nsuccess;
