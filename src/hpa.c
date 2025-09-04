@@ -221,7 +221,7 @@ hpa_shard_init(hpa_shard_t *shard, hpa_central_t *central, emap_t *emap,
 
 	shard->npending_purge = 0;
 	nstime_init_zero(&shard->last_purge);
-	nstime_init_zero(&shard->last_attempt);
+	shard->last_tick = 0;
 
 	shard->stats.npurge_passes = 0;
 	shard->stats.npurges = 0;
@@ -407,20 +407,15 @@ hpa_update_purge_hugify_eligibility(
 		hpdata_allow_hugify(ps, now);
         }
 
-	if (!hpdata_purge_allowed_get(ps) &&
-	    hpa_good_purge_candidate(shard, ps)) {
+	if (hpa_good_purge_candidate(shard, ps)) {
+		/* If it is purgable record the current tick */
 		hpdata_purge_allowed_set(ps, true);
-		if (shard->opts.purge_delay_ms > 0) {
-			nstime_t now;
-			shard->central->hooks.curtime(
-				&now, /* first_reading */ true);
-			hpdata_time_purge_allowed_set(ps, &now);
-		}
-	} else if (hpdata_purge_allowed_get(ps) &&
-		   !hpa_good_purge_candidate(shard, ps)) {
+		hpdata_tick_purge_allowed_set(ps, shard->last_tick);
+	} else if (hpdata_purge_allowed_get(ps)) {
 		/*
-		 * Once it drops below the purge threshold it was used, so
-		 * reset the purging.
+		 * Once it drops below the purge threshold it was used, reset
+		 * the purging and allow the tick to be set next time when it
+		 * becomes purgable again.
 		 */
 		hpdata_purge_allowed_set(ps, false);
 	}
@@ -515,9 +510,9 @@ hpa_purge_actual_unlocked(
  */
 static inline size_t
 hpa_purge_start_hp(hpa_purge_batch_t *b, psset_t *psset,
-		   const nstime_t *now, uint64_t purge_delay_ms) {
-	hpdata_t *to_purge = purge_delay_ms > 0 ?
-	    psset_pick_purge_with_delay(psset, now, purge_delay_ms) :
+		   uint64_t tick, uint64_t purge_delay_ticks) {
+	hpdata_t *to_purge = purge_delay_ticks > 0 ?
+	    psset_pick_purge_before_tick(psset, tick, purge_delay_ticks) :
 	    psset_pick_purge(psset);
 
 	if (to_purge == NULL) {
@@ -629,8 +624,8 @@ hpa_purge(tsdn_t *tsdn, hpa_shard_t *shard, size_t max_hp) {
 		    !hpa_batch_full(&batch) && hpa_should_purge(tsdn, shard)) {
 			size_t ndirty = hpa_purge_start_hp(
 			    &batch, &shard->psset,
-			    &shard->last_attempt,
-			    shard->opts.purge_delay_ms);
+			    shard->last_tick,
+			    shard->opts.purge_delay_ticks);
 			if (ndirty == 0) {
 				break;
 			}
@@ -726,8 +721,8 @@ hpa_try_hugify(tsdn_t *tsdn, hpa_shard_t *shard) {
 static bool
 hpa_min_purge_interval_passed(tsdn_t *tsdn, hpa_shard_t *shard) {
 	malloc_mutex_assert_owner(tsdn, &shard->mtx);
-	uint64_t since_last_purge_ms = nstime_ms_between(&shard->last_purge,
-							 &shard->last_attempt);
+	uint64_t since_last_purge_ms = shard->central->hooks.ms_since(
+	    &shard->last_purge);
 	return since_last_purge_ms >= shard->opts.min_purge_interval_ms;
 }
 
@@ -742,12 +737,7 @@ hpa_shard_maybe_do_deferred_work(
 	if (!forced && shard->opts.deferral_allowed) {
 		return;
 	}
-	/*
-	 * Last attempt to work on shard is used to respect various time related
-	 * constraints (min_purge_interval, hugification_delay etc.).  This is
-	 * effectively "now" for current pass.
-	 */
-	shard->central->hooks.curtime(&shard->last_attempt, false);
+	shard->last_tick++;
 
 	/*
 	 * If we're on a background thread, do work so long as there's work to

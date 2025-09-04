@@ -318,7 +318,7 @@ TEST_BEGIN(test_multi_pageslab) {
 	bool is_huge = false;
 	hpdata_init(&pageslab[0], PAGESLAB_ADDR, PAGESLAB_AGE, is_huge);
 	hpdata_init(&pageslab[1], (void *)((uintptr_t)PAGESLAB_ADDR + HUGEPAGE),
-		    PAGESLAB_AGE + 1, is_huge);
+	    PAGESLAB_AGE + 1, is_huge);
 
 	edata_t *alloc[2];
 	alloc[0] = (edata_t *)malloc(sizeof(edata_t) * HUGEPAGE_PAGES);
@@ -777,13 +777,13 @@ TEST_BEGIN(test_purge_prefers_nonhuge) {
 
 	for (size_t i = 0; i < NHP; i++) {
 		hpdata_init(
-			&hpdata_huge[i], (void *)((10 + i) * HUGEPAGE), 123 + i,
-			is_huge);
+		    &hpdata_huge[i], (void *)((10 + i) * HUGEPAGE), 123 + i,
+		    is_huge);
 		psset_insert(&psset, &hpdata_huge[i]);
 
 		hpdata_init(&hpdata_nonhuge[i],
-			    (void *)((10 + NHP + i) * HUGEPAGE), 456 + i,
-			    is_huge);
+		    (void *)((10 + NHP + i) * HUGEPAGE), 456 + i,
+		    is_huge);
 		psset_insert(&psset, &hpdata_nonhuge[i]);
 	}
 	for (int i = 0; i < 2 * NHP; i++) {
@@ -848,14 +848,6 @@ TEST_BEGIN(test_purge_timing) {
 	hpdata_t hpdata_empty_nh;
 	hpdata_t hpdata_empty_huge;
 	hpdata_t hpdata_nonempty;
-	nstime_t tm_non_empty;
-	nstime_init2(&tm_non_empty, 10, 0);
-	nstime_t tm_empty_nh;
-	nstime_init2(&tm_empty_nh, 11, 0);
-	nstime_t tm_empty_huge;
-	nstime_init2(&tm_empty_huge, 11, 100);
-	nstime_t now;
-	nstime_init2(&now, 12, 0);
 
 	/* Create and add to psset */
 	hpdata_init(&hpdata_empty_nh, (void *)(9 * HUGEPAGE), 102, false);
@@ -870,14 +862,14 @@ TEST_BEGIN(test_purge_timing) {
 	expect_ptr_eq(hpdata_addr_get(&hpdata_empty_nh), ptr, "");
 	hpdata_unreserve(&hpdata_empty_nh, ptr, PAGE);
 	hpdata_purge_allowed_set(&hpdata_empty_nh, true);
-	hpdata_time_purge_allowed_set(&hpdata_empty_nh, &tm_empty_nh);
+	hpdata_tick_purge_allowed_set(&hpdata_empty_nh, 100);
 	psset_update_end(&psset, &hpdata_empty_nh);
 
 	psset_update_begin(&psset, &hpdata_empty_huge);
 	ptr = hpdata_reserve_alloc(&hpdata_empty_huge, PAGE);
 	expect_ptr_eq(hpdata_addr_get(&hpdata_empty_huge), ptr, "");
 	hpdata_unreserve(&hpdata_empty_huge, ptr, PAGE);
-	hpdata_time_purge_allowed_set(&hpdata_empty_huge, &tm_empty_huge);
+	hpdata_tick_purge_allowed_set(&hpdata_empty_huge, 110);
 	hpdata_purge_allowed_set(&hpdata_empty_huge, true);
 	psset_update_end(&psset, &hpdata_empty_huge);
 
@@ -886,30 +878,22 @@ TEST_BEGIN(test_purge_timing) {
 	expect_ptr_eq(hpdata_addr_get(&hpdata_nonempty), ptr, "");
 	hpdata_unreserve(&hpdata_nonempty, ptr, 9 * PAGE);
 	hpdata_purge_allowed_set(&hpdata_nonempty, true);
-	hpdata_time_purge_allowed_set(&hpdata_nonempty, &tm_non_empty);
+	hpdata_tick_purge_allowed_set(&hpdata_nonempty, 80);
 	psset_update_end(&psset, &hpdata_nonempty);
 
 	/* The best to purge is the huge one, but earliest to is nonempty */
-	const uint64_t PURGE_DELAY_MS = 3000;
-	nstime_t tm_when_purgable;
-	nstime_copy(&tm_when_purgable, &tm_non_empty);
-	nstime_iadd(&tm_when_purgable, PURGE_DELAY_MS * 1000 * 1000);
-	uint64_t expected_ms = nstime_ms_between(&now, &tm_when_purgable);
-	uint64_t actual_ms = psset_ms_until_purge(&psset, &now, PURGE_DELAY_MS);
-	expect_lu_eq(expected_ms, actual_ms, "Nonempty should come first");
-
+	const uint64_t PURGE_DELAY_TICKS = 30;
+	
 	/* The best to purge with no time restriction is the huge one */
 	hpdata_t *ps = psset_pick_purge(&psset);
 	expect_ptr_eq(&hpdata_empty_huge, ps, "Without delay, pick huge");
 
 	/* However, only the one eligible for purging can be picked */
-	ps = psset_pick_purge_with_delay(&psset, &tm_when_purgable,
-					 PURGE_DELAY_MS);
+	ps = psset_pick_purge_before_tick(&psset, 110, PURGE_DELAY_TICKS);
 	expect_ptr_eq(&hpdata_nonempty, ps, "Only non empty purgable");
 
 	/* When all eligible, huge empty is the best */
-	nstime_iadd(&now, 10ULL * 1000 * 1000 * 1000);
-	ps = psset_pick_purge_with_delay(&psset, &now, PURGE_DELAY_MS);
+	ps = psset_pick_purge_before_tick(&psset, 140, PURGE_DELAY_TICKS);
 	expect_ptr_eq(&hpdata_empty_huge, ps, "Huge empty is the best");
 }
 TEST_END
@@ -1009,14 +993,14 @@ TEST_BEGIN(test_purge_prefers_empty_huge) {
 	 */
 	for (int i = 0; i < NHP; i++) {
 		hpdata_t *to_purge = psset_pick_purge(&psset);
-		expect_ptr_eq(&hpdata_huge[NHP - i - 1], to_purge, "");
+		expect_ptr_eq(&hpdata_huge[i], to_purge, "");
 		psset_update_begin(&psset, to_purge);
 		hpdata_purge_allowed_set(to_purge, false);
 		psset_update_end(&psset, to_purge);
 	}
 	for (int i = 0; i < NHP; i++) {
 		hpdata_t *to_purge = psset_pick_purge(&psset);
-		expect_ptr_eq(&hpdata_nonhuge[NHP - i -1], to_purge, "");
+		expect_ptr_eq(&hpdata_nonhuge[i], to_purge, "");
 		psset_update_begin(&psset, to_purge);
 		hpdata_purge_allowed_set(to_purge, false);
 		psset_update_end(&psset, to_purge);

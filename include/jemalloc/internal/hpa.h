@@ -147,11 +147,13 @@ struct hpa_shard_s {
 	 * Last time we performed purge on this shard.
 	 */
 	nstime_t last_purge;
-
+	
 	/*
-	 * Last time we attempted purge or hugification work on a shard.
+	 * Last tick when we attempted work. If deferral work is allowed (we
+	 * have backgeound thread, tick is attempt of the thread to do the work.
+	 * If deferral is not allowed, tick is just activity in the shard.
 	 */
-	nstime_t last_attempt;
+	uint64_t last_tick;
 };
 
 bool hpa_hugepage_size_exceeds_limit(void);

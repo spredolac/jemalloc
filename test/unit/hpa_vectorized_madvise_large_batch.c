@@ -40,7 +40,7 @@ static hpa_shard_opts_t test_hpa_shard_opts_default = {
     -1,
     /* purge_threshold */
     1,
-    /* purge_delay_ms */
+    /* purge_delay_ticks */
     0,
     /* start_as_huge */
     false};

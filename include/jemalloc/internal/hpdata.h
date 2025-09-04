@@ -28,7 +28,6 @@
 #define PSSET_ENUMERATE_MAX_NUM 32
 typedef struct hpdata_s hpdata_t;
 ph_structs(hpdata_age_heap, hpdata_t, PSSET_ENUMERATE_MAX_NUM);
-ph_structs(hpdata_purge_heap, hpdata_t, PSSET_ENUMERATE_MAX_NUM);
 struct hpdata_s {
 	/*
 	 * We likewise follow the edata convention of mangling names and forcing
@@ -104,7 +103,7 @@ struct hpdata_s {
 	/*
 	 * Linkage for the psset to track candidates for purging and hugifying.
 	 */
-	hpdata_purge_heap_link_t purge_link;
+	ql_elm(hpdata_t) ql_link_purge;
 	ql_elm(hpdata_t) ql_link_hugify;
 
 	/* The length of the largest contiguous sequence of inactive pages. */
@@ -126,15 +125,15 @@ struct hpdata_s {
 	/* The touched pages (using the same definition as above). */
 	fb_group_t touched_pages[FB_NGROUPS(HUGEPAGE_PAGES)];
 
-	/* Time it becomes eligible for purging */
-	nstime_t h_time_purge_allowed;
+	/* Shard tick when it becomes eligible for purging */
+	uint64_t h_tick_purge_allowed;
 };
 
 TYPED_LIST(hpdata_empty_list, hpdata_t, ql_link_empty)
+TYPED_LIST(hpdata_purge_list, hpdata_t, ql_link_purge)
 TYPED_LIST(hpdata_hugify_list, hpdata_t, ql_link_hugify)
 
 ph_proto(, hpdata_age_heap, hpdata_t);
-ph_proto(, hpdata_purge_heap, hpdata_t);
 
 static inline void *
 hpdata_addr_get(const hpdata_t *hpdata) {
@@ -308,13 +307,13 @@ hpdata_nretained_get(hpdata_t *hpdata) {
 }
 
 static inline void
-hpdata_time_purge_allowed_set(hpdata_t *hpdata, const nstime_t *src) {
-	nstime_copy(&hpdata->h_time_purge_allowed, src);
+hpdata_tick_purge_allowed_set(hpdata_t *hpdata, uint64_t v) {
+	hpdata->h_tick_purge_allowed = v;
 }
 
-static inline const nstime_t *
-hpdata_time_purge_allowed_get(const hpdata_t *hpdata) {
-	return &hpdata->h_time_purge_allowed;
+static inline uint64_t
+hpdata_tick_purge_allowed_get(const hpdata_t *hpdata) {
+	return hpdata->h_tick_purge_allowed;
 }
 
 static inline void

@@ -14,7 +14,7 @@ psset_init(psset_t *psset) {
 	memset(&psset->stats, 0, sizeof(psset->stats));
 	hpdata_empty_list_init(&psset->empty);
 	for (int i = 0; i < PSSET_NPURGE_LISTS; i++) {
-		hpdata_purge_heap_new(&psset->to_purge[i]);
+		hpdata_purge_list_init(&psset->to_purge[i]);
 	}
 	fb_init(psset->purge_bitmap, PSSET_NPURGE_LISTS);
 	hpdata_hugify_list_init(&psset->to_hugify);
@@ -257,12 +257,17 @@ psset_purge_list_ind(hpdata_t *ps) {
 
 static void
 psset_maybe_remove_purge_list(psset_t *psset, hpdata_t *ps) {
-	/* Remove the hpdata from from the heap */
+	/*
+	 * Remove the hpdata from its purge list (if it's in one).  Even if it's
+	 * going to stay in the same one, by appending it during
+	 * psset_update_end, we move it to the end of its queue, so that we
+	 * purge LRU within a given dirtiness bucket.
+	 */
 	if (hpdata_purge_allowed_get(ps)) {
-		size_t ind = psset_purge_list_ind(ps);
-		hpdata_purge_heap_t *purge_heap = &psset->to_purge[ind];
-		hpdata_purge_heap_remove(purge_heap, ps);
-		if (hpdata_purge_heap_empty(purge_heap)) {
+		size_t               ind = psset_purge_list_ind(ps);
+		hpdata_purge_list_t *purge_list = &psset->to_purge[ind];
+		hpdata_purge_list_remove(purge_list, ps);
+		if (hpdata_purge_list_empty(purge_list)) {
 			fb_unset(psset->purge_bitmap, PSSET_NPURGE_LISTS, ind);
 		}
 	}
@@ -271,12 +276,12 @@ psset_maybe_remove_purge_list(psset_t *psset, hpdata_t *ps) {
 static void
 psset_maybe_insert_purge_list(psset_t *psset, hpdata_t *ps) {
 	if (hpdata_purge_allowed_get(ps)) {
-		size_t ind = psset_purge_list_ind(ps);
-		hpdata_purge_heap_t *purge_heap = &psset->to_purge[ind];
-		if (hpdata_purge_heap_empty(purge_heap)) {
+		size_t               ind = psset_purge_list_ind(ps);
+		hpdata_purge_list_t *purge_list = &psset->to_purge[ind];
+		if (hpdata_purge_list_empty(purge_list)) {
 			fb_set(psset->purge_bitmap, PSSET_NPURGE_LISTS, ind);
 		}
-		hpdata_purge_heap_insert(purge_heap, ps);
+		hpdata_purge_list_append(purge_list, ps);
 	}
 }
 
@@ -385,10 +390,9 @@ psset_pick_alloc(psset_t *psset, size_t size) {
 }
 
 hpdata_t *
-psset_pick_purge_with_delay(psset_t *psset, const nstime_t *now,
-			   uint64_t purge_delay_ms) {
-	assert(now);
-        assert(purge_delay_ms > 0);
+psset_pick_purge_before_tick(psset_t *psset, uint64_t tick,
+			     uint64_t delay_ticks) {
+	assert(delay_ticks > 0);
 
 	size_t max_bit = PSSET_NPURGE_LISTS - 1;
 	/* Deliberately susceptible to overflow */
@@ -400,10 +404,11 @@ psset_pick_purge_with_delay(psset_t *psset, const nstime_t *now,
 		}
 		pszind_t ind = (pszind_t)ind_ssz;
 		assert(ind < PSSET_NPURGE_LISTS);
-		hpdata_t *ps = hpdata_purge_heap_first(&psset->to_purge[ind]);
-		const nstime_t *purge_tm = hpdata_time_purge_allowed_get(ps);
-		uint64_t ms_since = nstime_ms_between(purge_tm, now);
-		if (ms_since >= purge_delay_ms) {
+		hpdata_t *ps = hpdata_purge_list_first(&psset->to_purge[ind]);
+		assert(ps != NULL);
+		uint64_t purge_allowed_tick = hpdata_tick_purge_allowed_get(ps);
+		/* Deliberately susceptible to overflow */
+		if (delay_ticks <= tick - purge_allowed_tick) {
 			return ps;
 		}
 		max_bit--;
@@ -412,57 +417,20 @@ psset_pick_purge_with_delay(psset_t *psset, const nstime_t *now,
 	return NULL;
 }
 
-/* We use this one as a small optimization for purge_delay=0 */
+/* We use this one as a small optimization for purge_delay_ticks=0 */
 hpdata_t *
 psset_pick_purge(psset_t *psset) {
-	ssize_t ind_ssz = fb_fls(psset->purge_bitmap, PSSET_NPURGE_LISTS,
-	    PSSET_NPURGE_LISTS - 1);
+	ssize_t ind_ssz = fb_fls(
+	    psset->purge_bitmap, PSSET_NPURGE_LISTS, PSSET_NPURGE_LISTS - 1);
 	if (ind_ssz < 0) {
 		return NULL;
 	}
 	pszind_t ind = (pszind_t)ind_ssz;
 	assert(ind < PSSET_NPURGE_LISTS);
-	hpdata_t *ps = hpdata_purge_heap_first(&psset->to_purge[ind]);
-
+	hpdata_t *ps = hpdata_purge_list_first(&psset->to_purge[ind]);
 	assert(ps != NULL);
 	return ps;
 }
-
-uint64_t
-psset_ms_until_purge(psset_t *psset, const nstime_t *now,
-		     uint64_t purge_delay_ms) {
-	uint64_t ms_until = UINT64_MAX;
-	size_t min_bit = 0;
-	const nstime_t *min_time = NULL;
-
-	while (min_bit < PSSET_NPURGE_LISTS) {
-		size_t ind = fb_ffs(psset->purge_bitmap, PSSET_NPURGE_LISTS,
-				    min_bit);
-		if (ind == PSSET_NPURGE_LISTS) {
-			break;
-		}
-		hpdata_t *ps = hpdata_purge_heap_first(&psset->to_purge[ind]);
-		assert(ps != NULL);
-		if (min_time == NULL) {
-			min_time = hpdata_time_purge_allowed_get(ps);
-		} else {
-			const nstime_t *pt = hpdata_time_purge_allowed_get(ps);
-			if (nstime_compare(pt, min_time) < 0) {
-				min_time = pt;
-			}
-		}
-		min_bit = ind + 1;
-	}
-	if (min_time == NULL) {
-		return ms_until;
-	}
-	uint64_t ms_since = nstime_ms_between(min_time, now);
-	if (purge_delay_ms > ms_since) {
-		return purge_delay_ms - ms_since;
-	}
-	return 0;
-}
-
 
 hpdata_t *
 psset_pick_hugify(psset_t *psset) {
