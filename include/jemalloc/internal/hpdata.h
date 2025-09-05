@@ -125,7 +125,7 @@ struct hpdata_s {
 	/* The touched pages (using the same definition as above). */
 	fb_group_t touched_pages[FB_NGROUPS(HUGEPAGE_PAGES)];
 
-	/* Shard tick when it becomes eligible for purging */
+	/* Shard tick when it became eligible for purging */
 	uint64_t h_tick_purge_allowed;
 };
 

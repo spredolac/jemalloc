@@ -190,6 +190,87 @@ hpa_central_extract(tsdn_t *tsdn, hpa_central_t *central, size_t size,
 	return ps;
 }
 
+static void
+hpa_tick_time_init(hpa_tick_time_t *htt, uint64_t delay_ms) {
+	if (delay_ms == 0) {
+		return;
+	}
+	/* calculate the step so that full buffer covers the delay */
+	htt->step_ms = 1 + delay_ms / (HPA_TICK_TIME_SZ - 2);
+
+	for (size_t i=0; i<HPA_TICK_TIME_SZ; ++i) {
+		nstime_init_zero(&htt->buf[i].ts);
+		htt->buf[i].tick = 0;
+	}
+	htt->begin = 0;
+	htt->end = 0;
+}
+
+static inline bool
+hpa_tick_time_empty(const hpa_tick_time_t *htt) {
+	if (unlikely(nstime_equals_zero(&htt->buf[htt->begin].ts))) {
+		assert(htt->begin == htt->end);
+		return true;
+	}
+	return false;
+}
+
+static void
+hpa_record_tick_time(hpa_shard_t *shard, const nstime_t *now) {
+	if (shard->opts.min_purge_delay_ms == 0) {
+		return;
+	}
+
+	hpa_tick_time_t *htt = &shard->htt;
+	if (hpa_tick_time_empty(htt)) {
+		htt->buf[htt->end].tick = shard->last_tick;
+		nstime_copy(&htt->buf[htt->end].ts, now);
+		htt->end = (htt->end + 1) & HPA_TICK_TIME_SZ_MASK;
+		return;
+	}
+
+	uint16_t last = (htt->end - 1) & HPA_TICK_TIME_SZ_MASK;
+	assert(!nstime_equals_zero(&htt->buf[last].ts));
+	uint64_t since_prev_ms = nstime_ms_between(&htt->buf[last].ts, now);
+	if (since_prev_ms >= htt->step_ms) {
+		last = htt->end;
+		if (last == htt->begin) { /* Full buffer */
+			htt->begin = (htt->begin + 1) & HPA_TICK_TIME_SZ_MASK;
+		}
+		htt->end = (htt->end + 1) & HPA_TICK_TIME_SZ_MASK;
+	}
+
+	htt->buf[last].tick = shard->last_tick;
+	nstime_copy(&htt->buf[last].ts, now);
+}
+
+static const uint64_t *
+hpa_find_purge_tick(hpa_shard_t *shard, const nstime_t *now) {
+	if (hpa_tick_time_empty(&shard->htt)) {
+		return NULL;
+	}
+	const hpa_tick_time_t *htt = &shard->htt;
+
+	nstime_t max_time;
+	nstime_init_zero(&max_time);
+	if (shard->opts.min_purge_delay_ms > 0) {
+		uint64_t delayns = shard->opts.min_purge_delay_ms * 1000 * 1000;
+		nstime_copy(&max_time, now);
+		nstime_isubtract(&max_time, delayns);
+	}
+
+	uint16_t current = htt->begin;
+	const uint64_t *tick = NULL;
+	while(nstime_compare(&htt->buf[current].ts, &max_time) <= 0) {
+		tick = &htt->buf[current].tick;
+		current = (current + 1) & HPA_TICK_TIME_SZ_MASK;
+		if (current == htt->begin) {
+			break;
+		}
+	}
+	return tick;
+}
+
 bool
 hpa_shard_init(hpa_shard_t *shard, hpa_central_t *central, emap_t *emap,
     base_t *base, edata_cache_t *edata_cache, unsigned ind,
@@ -222,6 +303,7 @@ hpa_shard_init(hpa_shard_t *shard, hpa_central_t *central, emap_t *emap,
 	shard->npending_purge = 0;
 	nstime_init_zero(&shard->last_purge);
 	shard->last_tick = 0;
+	hpa_tick_time_init(&shard->htt, opts->min_purge_delay_ms);
 
 	shard->stats.npurge_passes = 0;
 	shard->stats.npurges = 0;
@@ -510,11 +592,13 @@ hpa_purge_actual_unlocked(
  */
 static inline size_t
 hpa_purge_start_hp(hpa_purge_batch_t *b, psset_t *psset,
-		   uint64_t tick, uint64_t purge_delay_ticks) {
-	hpdata_t *to_purge = purge_delay_ticks > 0 ?
-	    psset_pick_purge_before_tick(psset, tick, purge_delay_ticks) :
-	    psset_pick_purge(psset);
-
+		   const uint64_t *ptick) {
+	hpdata_t *to_purge;
+	if (ptick != NULL) {
+		to_purge = psset_pick_purge_until_tick(psset, *ptick);
+	} else {
+		to_purge = psset_pick_purge(psset);
+	}
 	if (to_purge == NULL) {
 		return 0;
 	}
@@ -600,7 +684,7 @@ hpa_batch_empty(hpa_purge_batch_t *b) {
 
 /* Returns number of huge pages purged. */
 static inline size_t
-hpa_purge(tsdn_t *tsdn, hpa_shard_t *shard, size_t max_hp) {
+hpa_purge(tsdn_t *tsdn, hpa_shard_t *shard, size_t max_hp, const nstime_t *now) {
 	malloc_mutex_assert_owner(tsdn, &shard->mtx);
 	assert(max_hp > 0);
 
@@ -617,15 +701,21 @@ hpa_purge(tsdn_t *tsdn, hpa_shard_t *shard, size_t max_hp) {
 	};
 	assert(batch.range_watermark > 0);
 
+	const uint64_t *ptick = NULL;
 	while (1) {
 		hpa_batch_pass_start(&batch);
 		assert(hpa_batch_empty(&batch));
 		while (
 		    !hpa_batch_full(&batch) && hpa_should_purge(tsdn, shard)) {
-			size_t ndirty = hpa_purge_start_hp(
-			    &batch, &shard->psset,
-			    shard->last_tick,
-			    shard->opts.purge_delay_ticks);
+			if (shard->opts.min_purge_delay_ms > 0 && !ptick) {
+				ptick = hpa_find_purge_tick(shard, now);
+				if (!ptick) {
+					break;
+				}
+			}
+			size_t ndirty = hpa_purge_start_hp(&batch,
+							   &shard->psset,
+							   ptick);
 			if (ndirty == 0) {
 				break;
 			}
@@ -719,10 +809,11 @@ hpa_try_hugify(tsdn_t *tsdn, hpa_shard_t *shard) {
 }
 
 static bool
-hpa_min_purge_interval_passed(tsdn_t *tsdn, hpa_shard_t *shard) {
+hpa_min_purge_interval_passed(tsdn_t *tsdn, hpa_shard_t *shard,
+			      const nstime_t *now) {
 	malloc_mutex_assert_owner(tsdn, &shard->mtx);
-	uint64_t since_last_purge_ms = shard->central->hooks.ms_since(
-	    &shard->last_purge);
+	uint64_t since_last_purge_ms = nstime_ms_between(&shard->last_purge,
+							 now);
 	return since_last_purge_ms >= shard->opts.min_purge_interval_ms;
 }
 
@@ -737,7 +828,6 @@ hpa_shard_maybe_do_deferred_work(
 	if (!forced && shard->opts.deferral_allowed) {
 		return;
 	}
-	shard->last_tick++;
 
 	/*
 	 * If we're on a background thread, do work so long as there's work to
@@ -762,7 +852,11 @@ hpa_shard_maybe_do_deferred_work(
 	 * Make sure we respect purge interval setting and don't purge
 	 * too frequently.
 	 */
-	if (hpa_min_purge_interval_passed(tsdn, shard)) {
+	nstime_t now;
+	shard->central->hooks.curtime(&now, /* first_reading */ true);
+	shard->last_tick++;
+	hpa_record_tick_time(shard, &now);
+	if (hpa_min_purge_interval_passed(tsdn, shard, &now)) {
 		size_t max_purges = max_ops;
 		/*
 		 * Limit number of hugepages (slabs) to purge.
@@ -778,7 +872,7 @@ hpa_shard_maybe_do_deferred_work(
 		}
 
 		malloc_mutex_assert_owner(tsdn, &shard->mtx);
-		nops += hpa_purge(tsdn, shard, max_purges);
+		nops += hpa_purge(tsdn, shard, max_purges, &now);
 		malloc_mutex_assert_owner(tsdn, &shard->mtx);
 	}
 

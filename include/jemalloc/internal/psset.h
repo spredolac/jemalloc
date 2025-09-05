@@ -123,9 +123,8 @@ void psset_update_end(psset_t *psset, hpdata_t *ps);
 hpdata_t *psset_pick_alloc(psset_t *psset, size_t size);
 /* Pick one to purge. */
 hpdata_t *psset_pick_purge(psset_t *psset);
-/* Pick one to purge that is purgable before given tick */
-hpdata_t *psset_pick_purge_before_tick(psset_t *psset, uint64_t tick,
-				       uint64_t delay_ticks);
+/* Pick one to purge that is purgable until given tick (inclusive) */
+hpdata_t *psset_pick_purge_until_tick(psset_t *psset, uint64_t tick);
 
 /* Pick one to hugify. */
 hpdata_t *psset_pick_hugify(psset_t *psset);

@@ -82,6 +82,29 @@ struct hpa_shard_stats_s {
 	hpa_shard_nonderived_stats_t nonderived_stats;
 };
 
+#define HPA_TICK_TIME_SZ 32ULL
+#define HPA_TICK_TIME_SZ_MASK (HPA_TICK_TIME_SZ - 1)
+
+typedef struct hpa_tick_time_pair_s hpa_tick_time_pair_t;
+struct hpa_tick_time_pair_s {
+	nstime_t ts;
+	uint64_t tick;
+};
+
+typedef struct hpa_tick_time_s hpa_tick_time_t;
+struct hpa_tick_time_s {
+	hpa_tick_time_pair_t buf[HPA_TICK_TIME_SZ];
+	/* Current index pointing into the next slot */
+
+	/* Min ms difference between steps. */ 
+	uint64_t step_ms;
+
+	/* current start of the buffer */
+	uint16_t begin;
+	/* Current end of the buffer. Buffer is empty when begin == end. */
+	uint16_t end;
+};
+
 typedef struct hpa_shard_s hpa_shard_t;
 struct hpa_shard_s {
 	/*
@@ -151,9 +174,15 @@ struct hpa_shard_s {
 	/*
 	 * Last tick when we attempted work. If deferral work is allowed (we
 	 * have backgeound thread, tick is attempt of the thread to do the work.
-	 * If deferral is not allowed, tick is just activity in the shard.
+	 * If deferral is not allowed, tick is just activity in the shard (alloc
+	 * or dalloc).
 	 */
 	uint64_t last_tick;
+
+	/*
+	 * Markers when work was attempted, to connect ticks with time.
+	 */
+	hpa_tick_time_t htt;
 };
 
 bool hpa_hugepage_size_exceeds_limit(void);

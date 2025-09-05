@@ -1638,8 +1638,8 @@ malloc_conf_init_helper(sc_data_t *sc_data, unsigned bin_shard_sizes[SC_NBINS],
 					   CONF_CHECK_MIN, CONF_CHECK_MAX,
 					   true);
 
-			CONF_HANDLE_UINT64_T(opt_hpa_opts.purge_delay_ticks,
-					     "hpa_purge_delay_ticks", 0,
+			CONF_HANDLE_UINT64_T(opt_hpa_opts.min_purge_delay_ms,
+					     "hpa_min_purge_delay_ms", 0,
 					     UINT64_MAX, CONF_DONT_CHECK_MIN,
 					     CONF_DONT_CHECK_MAX, false);
 

@@ -389,14 +389,11 @@ psset_pick_alloc(psset_t *psset, size_t size) {
 	return ps;
 }
 
+#define PSSET_TICK_SANITY_DISTANCE (UINT64_MAX / 2)
 hpdata_t *
-psset_pick_purge_before_tick(psset_t *psset, uint64_t tick,
-			     uint64_t delay_ticks) {
-	assert(delay_ticks > 0);
-
+psset_pick_purge_until_tick(psset_t *psset, uint64_t tick) {
 	size_t max_bit = PSSET_NPURGE_LISTS - 1;
-	/* Deliberately susceptible to overflow */
-	while (max_bit <= PSSET_NPURGE_LISTS - 1) {
+	while (1) {
 		ssize_t ind_ssz = fb_fls(psset->purge_bitmap,
 					 PSSET_NPURGE_LISTS, max_bit);
 		if (ind_ssz < 0) {
@@ -407,8 +404,13 @@ psset_pick_purge_before_tick(psset_t *psset, uint64_t tick,
 		hpdata_t *ps = hpdata_purge_list_first(&psset->to_purge[ind]);
 		assert(ps != NULL);
 		uint64_t purge_allowed_tick = hpdata_tick_purge_allowed_get(ps);
-		/* Deliberately susceptible to overflow */
-		if (delay_ticks <= tick - purge_allowed_tick) {
+		/*
+		 * In an unlikely event of tick overflow between the time ps was
+		 * eligible for purge and the time it should be purged, we will
+		 * use sanity distance.  In the worst case we purge a bit earlier
+		 */
+		if (purge_allowed_tick <= tick ||
+		   (purge_allowed_tick - tick > PSSET_TICK_SANITY_DISTANCE)) {
 			return ps;
 		}
 		max_bit--;

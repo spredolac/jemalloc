@@ -70,12 +70,13 @@ struct hpa_shard_opts_s {
 	size_t purge_threshold;
 
 	/*
-	 * How long does HP page need to be eligible for purging before it gets
-	 * purged.  Setting this to larger number would give better chance of
-	 * reusing that memory.  Setting it to 0 means that page is eligible
-	 * for purging as soon as it meets the purge_threshold.
+	 * Minimum number of ms that needs to elapse between HP page becoming
+	 * eligible for purging and actually getting purged.  Setting this to
+	 * a larger number would give better chance of reusing that memory.
+	 * Setting it to 0 means that page is eligible for purging as soon as
+	 * it meets the purge_threshold.
 	 */
-	uint64_t purge_delay_ticks;
+	uint64_t min_purge_delay_ms;
 
 	/*
 	 * If page should start as huge (instead of waiting to for hugification
@@ -115,7 +116,7 @@ struct hpa_shard_opts_s {
 	-1,      							\
 	/* size_t purge_threshold */					\
 	1,								\
-	/* purge_delay_ticks */             				\
+	/* min_purge_delay_ms */             				\
 	0,  								\
 	/* start_as_huge */                    				\
 	false								\

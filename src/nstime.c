@@ -15,6 +15,10 @@ nstime_set_initialized(nstime_t *time) {
 #endif
 }
 
+static void sloba_pause() {
+	assert(false);
+}
+
 static void
 nstime_assert_initialized(const nstime_t *time) {
 #ifdef JEMALLOC_DEBUG
@@ -124,6 +128,9 @@ nstime_subtract(nstime_t *time, const nstime_t *subtrahend) {
 void
 nstime_isubtract(nstime_t *time, uint64_t subtrahend) {
 	nstime_assert_initialized(time);
+	if (!(time->ns >= subtrahend)) {
+		sloba_pause();
+	}
 	assert(time->ns >= subtrahend);
 
 	/* No initialize operand -- subtraction must be initialized. */
@@ -160,6 +167,18 @@ nstime_divide(const nstime_t *time, const nstime_t *divisor) {
 	return time->ns / divisor->ns;
 }
 
+uint64_t
+nstime_ns_between(const nstime_t *earlier, const nstime_t *later) {
+	nstime_assert_initialized(earlier);
+	nstime_assert_initialized(later);
+	assert(nstime_compare(later, earlier) >= 0);
+	return later->ns - earlier->ns;
+}
+
+uint64_t nstime_ms_between(const nstime_t *earlier, const nstime_t *later) {
+	return nstime_ns_between(earlier, later) / MILLION;
+}
+
 /* Returns time since *past in nanoseconds, w/o updating *past. */
 uint64_t
 nstime_ns_since(const nstime_t *past) {
@@ -168,9 +187,7 @@ nstime_ns_since(const nstime_t *past) {
 	nstime_t now;
 	nstime_copy(&now, past);
 	nstime_update(&now);
-
-	assert(nstime_compare(&now, past) >= 0);
-	return now.ns - past->ns;
+	return nstime_ns_between(past, &now);
 }
 
 /* Returns time since *past in milliseconds, w/o updating *past. */

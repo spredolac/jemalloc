@@ -880,20 +880,17 @@ TEST_BEGIN(test_purge_timing) {
 	hpdata_purge_allowed_set(&hpdata_nonempty, true);
 	hpdata_tick_purge_allowed_set(&hpdata_nonempty, 80);
 	psset_update_end(&psset, &hpdata_nonempty);
-
-	/* The best to purge is the huge one, but earliest to is nonempty */
-	const uint64_t PURGE_DELAY_TICKS = 30;
 	
 	/* The best to purge with no time restriction is the huge one */
 	hpdata_t *ps = psset_pick_purge(&psset);
-	expect_ptr_eq(&hpdata_empty_huge, ps, "Without delay, pick huge");
+	expect_ptr_eq(&hpdata_empty_huge, ps, "Without tick, pick huge");
 
 	/* However, only the one eligible for purging can be picked */
-	ps = psset_pick_purge_before_tick(&psset, 110, PURGE_DELAY_TICKS);
+	ps = psset_pick_purge_until_tick(&psset, 90);
 	expect_ptr_eq(&hpdata_nonempty, ps, "Only non empty purgable");
 
 	/* When all eligible, huge empty is the best */
-	ps = psset_pick_purge_before_tick(&psset, 140, PURGE_DELAY_TICKS);
+	ps = psset_pick_purge_until_tick(&psset, 110);
 	expect_ptr_eq(&hpdata_empty_huge, ps, "Huge empty is the best");
 }
 TEST_END
