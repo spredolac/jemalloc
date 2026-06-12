@@ -127,8 +127,6 @@ struct pac_s {
 	malloc_mutex_t *stats_mtx;
 	pac_stats_t    *stats;
 
-	/* Extent serial number generator state. */
-	atomic_zu_t extent_sn_next;
 };
 
 typedef struct pac_thp_s pac_thp_t;

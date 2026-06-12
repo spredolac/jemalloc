@@ -144,13 +144,6 @@ struct hpa_shard_s {
 
 	psset_t psset;
 
-	/*
-	 * How many grow operations have occurred.
-	 *
-	 * Guarded by grow_mtx.
-	 */
-	uint64_t age_counter;
-
 	/* The arena ind we're associated with. */
 	unsigned ind;
 

@@ -67,7 +67,6 @@ bool     extent_merge_wrapper(
         tsdn_t *tsdn, pac_t *pac, ehooks_t *ehooks, edata_t *a, edata_t *b);
 bool   extent_commit_zero(tsdn_t *tsdn, ehooks_t *ehooks, edata_t *edata,
       bool commit, bool zero, bool growing_retained);
-size_t extent_sn_next(pac_t *pac);
 bool   extent_boot(void);
 
 JEMALLOC_ALWAYS_INLINE bool

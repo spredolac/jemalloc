@@ -81,7 +81,6 @@ hpa_shard_init(tsdn_t *tsdn, hpa_shard_t *shard, hpa_central_t *central,
 	shard->base = base;
 	edata_cache_fast_init(&shard->ecf, edata_cache);
 	psset_init(&shard->psset);
-	shard->age_counter = 0;
 	shard->ind = ind;
 	shard->emap = emap;
 
@@ -665,10 +664,10 @@ hpa_try_alloc_one_offset(tsdn_t *tsdn, hpa_shard_t *shard, size_t size,
 
 	void *addr = hpdata_reserve_alloc_offset(ps, size, alloc_offset);
 	JE_USDT(hpa_alloc, 5, shard->ind, addr, size, hpdata_nactive_get(ps),
-	    hpdata_age_get(ps));
+	    /* unused */ 0);
 	edata_init(edata, shard->ind, addr, size, /* slab */ false, SC_NSIZES,
-	    /* sn */ hpdata_age_get(ps), extent_state_active,
-	    /* zeroed */ false, /* committed */ true, EXTENT_PAI_HPA,
+	    extent_state_active, /* zeroed */ false, /* committed */ true,
+	    EXTENT_PAI_HPA,
 	    EXTENT_NOT_HEAD);
 	edata_ps_set(edata, ps);
 
@@ -687,7 +686,7 @@ hpa_try_alloc_one_offset(tsdn_t *tsdn, hpa_shard_t *shard, size_t size,
 		    ps, edata_addr_get(edata), edata_size_get(edata));
 		JE_USDT(hpa_dalloc_err, 5, shard->ind, edata_addr_get(edata),
 		    edata_size_get(edata), hpdata_nactive_get(ps),
-		    hpdata_age_get(ps));
+		    /* unused */ 0);
 		/*
 		 * We should arguably reset dirty state here, but this would
 		 * require some sort of prepare + commit functionality that's a
@@ -728,17 +727,6 @@ hpa_try_alloc_from_one_ps(tsdn_t *tsdn, hpa_shard_t *shard, size_t size,
             ps, size, alloc_offsets, max_nallocs);
 
 	psset_update_begin(&shard->psset, ps);
-
-	if (hpdata_empty(ps)) {
-		/*
-         * If the pageslab used to be empty, treat it as though it's
-		 * brand new for fragmentation-avoidance purposes; what we're
-		 * trying to approximate is the age of the allocations *in* that
-		 * pageslab, and the allocations in the new pageslab are by
-		 * definition the youngest in this hpa shard.
-		 */
-		hpdata_age_set(ps, shard->age_counter++);
-	}
 
 	size_t nsuccess = 0;
 	for (; nsuccess < nallocs; nsuccess += 1) {
@@ -866,7 +854,7 @@ hpa_alloc_batch_psset(tsdn_t *tsdn, hpa_shard_t *shard, size_t size,
 	 * while we're doing this potentially expensive system call.
 	 */
 	hpdata_t *ps = hpa_central_extract(tsdn, shard->central, size,
-	    shard->age_counter++, hpa_is_hugify_eager(shard), &oom);
+	    hpa_is_hugify_eager(shard), &oom);
 	if (ps == NULL) {
 		malloc_mutex_unlock(tsdn, &shard->grow_mtx);
 		return nsuccess;
@@ -1025,7 +1013,7 @@ hpa_dalloc_locked(tsdn_t *tsdn, hpa_shard_t *shard, edata_t *edata) {
 	psset_update_begin(&shard->psset, ps);
 	hpdata_unreserve(ps, unreserve_addr, unreserve_size);
 	JE_USDT(hpa_dalloc, 5, shard->ind, unreserve_addr, unreserve_size,
-	    hpdata_nactive_get(ps), hpdata_age_get(ps));
+	    hpdata_nactive_get(ps), /* unused */ 0);
 	hpa_update_purge_hugify_eligibility(tsdn, shard, ps);
 	psset_update_end(&shard->psset, ps);
 }

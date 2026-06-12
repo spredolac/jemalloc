@@ -69,17 +69,14 @@ struct base_s {
 	 */
 	pszind_t pind_last;
 
-	/* Serial number generation state. */
-	size_t extent_sn_next;
-
 	/* Chain of all blocks associated with base. */
 	base_block_t *blocks;
 
-	/* Heap of extents that track unused trailing space within blocks. */
-	edata_heap_t avail[SC_NSIZES];
+	/* MRU lists of extents that track unused base allocator space. */
+	edata_list_base_avail_t avail[SC_NSIZES];
 
 	/* Contains reusable base edata (used by tcache_stacks currently). */
-	edata_avail_t edata_avail;
+	edata_list_avail_t edata_avail;
 
 	/* Stats, only maintained if config_stats. */
 	size_t allocated;

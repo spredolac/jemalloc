@@ -674,7 +674,7 @@ arena_bin_reset(tsd_t *tsd, arena_t *arena, bin_t *bin) {
 		arena_slab_dalloc(tsd_tsdn(tsd), arena, slab);
 		malloc_mutex_lock(tsd_tsdn(tsd), &bin->lock);
 	}
-	while ((slab = edata_heap_remove_first(&bin->slabs_nonfull)) != NULL) {
+	while ((slab = bin_slabs_nonfull_remove_first(bin)) != NULL) {
 		malloc_mutex_unlock(tsd_tsdn(tsd), &bin->lock);
 		arena_slab_dalloc(tsd_tsdn(tsd), arena, slab);
 		malloc_mutex_lock(tsd_tsdn(tsd), &bin->lock);

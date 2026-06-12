@@ -47,10 +47,11 @@ TEST_BEGIN(test_rtree_extrema) {
 	edata_a = alloc_edata();
 	edata_b = alloc_edata();
 	edata_init(edata_a, INVALID_ARENA_IND, NULL, SC_LARGE_MINCLASS, false,
-	    sz_size2index(SC_LARGE_MINCLASS), 0, extent_state_active, false,
+	    sz_size2index(SC_LARGE_MINCLASS), extent_state_active, false,
 	    false, EXTENT_PAI_PAC, EXTENT_NOT_HEAD);
-	edata_init(edata_b, INVALID_ARENA_IND, NULL, 0, false, SC_NSIZES, 0,
-	    extent_state_active, false, false, EXTENT_PAI_PAC, EXTENT_NOT_HEAD);
+	edata_init(edata_b, INVALID_ARENA_IND, NULL, 0, false, SC_NSIZES,
+	    extent_state_active, false, false, EXTENT_PAI_PAC,
+	    EXTENT_NOT_HEAD);
 
 	tsdn_t *tsdn = tsdn_fetch();
 
@@ -116,8 +117,9 @@ TEST_BEGIN(test_rtree_bits) {
 	uintptr_t keys[] = {
 	    PAGE, PAGE + 1, PAGE + (((uintptr_t)1) << LG_PAGE) - 1};
 	edata_t *edata_c = alloc_edata();
-	edata_init(edata_c, INVALID_ARENA_IND, NULL, 0, false, SC_NSIZES, 0,
-	    extent_state_active, false, false, EXTENT_PAI_PAC, EXTENT_NOT_HEAD);
+	edata_init(edata_c, INVALID_ARENA_IND, NULL, 0, false, SC_NSIZES,
+	    extent_state_active, false, false, EXTENT_PAI_PAC,
+	    EXTENT_NOT_HEAD);
 
 	rtree_t    *rtree = &test_rtree;
 	rtree_ctx_t rtree_ctx;
@@ -173,8 +175,9 @@ TEST_BEGIN(test_rtree_random) {
 	rtree_ctx_data_init(&rtree_ctx);
 
 	edata_t *edata_d = alloc_edata();
-	edata_init(edata_d, INVALID_ARENA_IND, NULL, 0, false, SC_NSIZES, 0,
-	    extent_state_active, false, false, EXTENT_PAI_PAC, EXTENT_NOT_HEAD);
+	edata_init(edata_d, INVALID_ARENA_IND, NULL, 0, false, SC_NSIZES,
+	    extent_state_active, false, false, EXTENT_PAI_PAC,
+	    EXTENT_NOT_HEAD);
 
 	expect_false(
 	    rtree_new(rtree, base, false), "Unexpected rtree_new() failure");
@@ -230,8 +233,9 @@ test_rtree_range_write(
 	rtree_ctx_data_init(&rtree_ctx);
 
 	edata_t *edata_e = alloc_edata();
-	edata_init(edata_e, INVALID_ARENA_IND, NULL, 0, false, SC_NSIZES, 0,
-	    extent_state_active, false, false, EXTENT_PAI_PAC, EXTENT_NOT_HEAD);
+	edata_init(edata_e, INVALID_ARENA_IND, NULL, 0, false, SC_NSIZES,
+	    extent_state_active, false, false, EXTENT_PAI_PAC,
+	    EXTENT_NOT_HEAD);
 	rtree_contents_t contents;
 	contents.edata = edata_e;
 	contents.metadata.szind = SC_NSIZES;

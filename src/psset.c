@@ -7,7 +7,10 @@
 void
 psset_init(psset_t *psset) {
 	for (unsigned i = 0; i < PSSET_NPSIZES; i++) {
-		hpdata_age_heap_new(&psset->pageslabs[i]);
+		for (unsigned j = 0; j < PSSET_NALLOC_BUCKETS; j++) {
+			hpdata_alloc_list_init(&psset->pageslabs_dense[i][j]);
+		}
+		fb_init(psset->pageslab_alloc_bitmap[i], PSSET_NALLOC_BUCKETS);
 	}
 	fb_init(psset->pageslab_bitmap, PSSET_NPSIZES);
 	memset(&psset->stats, 0, sizeof(psset->stats));
@@ -133,22 +136,57 @@ psset_hpdata_heap_index(const hpdata_t *ps) {
 	return pind;
 }
 
+static unsigned
+psset_hpdata_alloc_index(const hpdata_t *ps) {
+	size_t nallocs = hpdata_nallocs_get(ps);
+	/* Use 1, 2, ..., 7, 8+; lower indices are picked first. */
+	if (nallocs == 0) {
+		return PSSET_NALLOC_BUCKETS - 1;
+	}
+	nallocs = nallocs > PSSET_NALLOC_BUCKETS ? PSSET_NALLOC_BUCKETS
+	    : nallocs;
+	return PSSET_NALLOC_BUCKETS - (unsigned)nallocs;
+}
+
 static void
-psset_hpdata_heap_remove(psset_t *psset, hpdata_t *ps) {
+psset_hpdata_dense_remove(psset_t *psset, hpdata_t *ps) {
 	pszind_t pind = psset_hpdata_heap_index(ps);
-	hpdata_age_heap_remove(&psset->pageslabs[pind], ps);
-	if (hpdata_age_heap_empty(&psset->pageslabs[pind])) {
+	unsigned alloc_ind = psset_hpdata_alloc_index(ps);
+	hpdata_alloc_list_t *list =
+	    &psset->pageslabs_dense[pind][alloc_ind];
+	hpdata_alloc_list_remove(list, ps);
+	if (hpdata_alloc_list_empty(list)) {
+		fb_unset(psset->pageslab_alloc_bitmap[pind],
+		    PSSET_NALLOC_BUCKETS, alloc_ind);
+	}
+	if (fb_empty(psset->pageslab_alloc_bitmap[pind],
+	        PSSET_NALLOC_BUCKETS)) {
 		fb_unset(psset->pageslab_bitmap, PSSET_NPSIZES, (size_t)pind);
 	}
 }
 
 static void
-psset_hpdata_heap_insert(psset_t *psset, hpdata_t *ps) {
+psset_hpdata_dense_insert(psset_t *psset, hpdata_t *ps) {
 	pszind_t pind = psset_hpdata_heap_index(ps);
-	if (hpdata_age_heap_empty(&psset->pageslabs[pind])) {
-		fb_set(psset->pageslab_bitmap, PSSET_NPSIZES, (size_t)pind);
+	unsigned alloc_ind = psset_hpdata_alloc_index(ps);
+	hpdata_alloc_list_t *list =
+	    &psset->pageslabs_dense[pind][alloc_ind];
+	if (hpdata_alloc_list_empty(list)) {
+		fb_set(psset->pageslab_alloc_bitmap[pind],
+		    PSSET_NALLOC_BUCKETS, alloc_ind);
 	}
-	hpdata_age_heap_insert(&psset->pageslabs[pind], ps);
+	fb_set(psset->pageslab_bitmap, PSSET_NPSIZES, (size_t)pind);
+	hpdata_alloc_list_prepend(list, ps);
+}
+
+static void
+psset_hpdata_alloc_remove(psset_t *psset, hpdata_t *ps) {
+	psset_hpdata_dense_remove(psset, ps);
+}
+
+static void
+psset_hpdata_alloc_insert(psset_t *psset, hpdata_t *ps) {
+	psset_hpdata_dense_insert(psset, ps);
 }
 
 static void
@@ -200,7 +238,7 @@ psset_alloc_container_insert(psset_t *psset, hpdata_t *ps) {
 		 * going to return them from a psset_pick_alloc call.
 		 */
 	} else {
-		psset_hpdata_heap_insert(psset, ps);
+		psset_hpdata_alloc_insert(psset, ps);
 	}
 }
 
@@ -215,7 +253,7 @@ psset_alloc_container_remove(psset_t *psset, hpdata_t *ps) {
 	} else if (hpdata_full(ps)) {
 		/* Same as above -- do nothing in this case. */
 	} else {
-		psset_hpdata_heap_remove(psset, ps);
+		psset_hpdata_alloc_remove(psset, ps);
 	}
 }
 
@@ -336,38 +374,45 @@ psset_update_end(psset_t *psset, hpdata_t *ps) {
 }
 
 static hpdata_t *
-psset_enumerate_search(psset_t *psset, pszind_t pind, size_t size) {
-	if (hpdata_age_heap_empty(&psset->pageslabs[pind])) {
+psset_enumerate_search_dense(psset_t *psset, pszind_t pind, size_t size) {
+	if (fb_empty(psset->pageslab_alloc_bitmap[pind],
+	        PSSET_NALLOC_BUCKETS)) {
 		return NULL;
 	}
 
-	hpdata_t                          *ps = NULL;
-	hpdata_age_heap_enumerate_helper_t helper;
-	hpdata_age_heap_enumerate_prepare(&psset->pageslabs[pind], &helper,
-	    PSSET_ENUMERATE_MAX_NUM, sizeof(helper.bfs_queue) / sizeof(void *));
-
-	while ((ps = hpdata_age_heap_enumerate_next(
-	            &psset->pageslabs[pind], &helper))) {
-		if ((hpdata_longest_free_range_get(ps) << LG_PAGE) >= size) {
-			return ps;
+	size_t num_seen = 0;
+	size_t alloc_ind = fb_ffs(psset->pageslab_alloc_bitmap[pind],
+	    PSSET_NALLOC_BUCKETS, (size_t)0);
+	while (alloc_ind < PSSET_NALLOC_BUCKETS) {
+		hpdata_alloc_list_t *list =
+		    &psset->pageslabs_dense[pind][alloc_ind];
+		for (hpdata_t *ps = hpdata_alloc_list_first(list); ps != NULL;
+		    ps = hpdata_alloc_list_next(list, ps)) {
+			if ((hpdata_longest_free_range_get(ps) << LG_PAGE)
+			    >= size) {
+				return ps;
+			}
+			num_seen++;
+			if (num_seen >= PSSET_ENUMERATE_MAX_NUM) {
+				return NULL;
+			}
 		}
+		alloc_ind = fb_ffs(psset->pageslab_alloc_bitmap[pind],
+		    PSSET_NALLOC_BUCKETS, alloc_ind + 1);
 	}
 
 	return NULL;
 }
 
-hpdata_t *
-psset_pick_alloc(psset_t *psset, size_t size) {
-	assert((size & PAGE_MASK) == 0);
-	assert(size <= HUGEPAGE);
-
+static hpdata_t *
+psset_pick_alloc_dense(psset_t *psset, size_t size) {
 	pszind_t  min_pind = sz_psz2ind(sz_psz_quantize_ceil(size));
 	hpdata_t *ps = NULL;
 
 	/* See comments in eset_first_fit for why we enumerate search below. */
 	pszind_t pind_prev = sz_psz2ind(sz_psz_quantize_floor(size));
 	if (sz_large_size_classes_disabled() && pind_prev < min_pind) {
-		ps = psset_enumerate_search(psset, pind_prev, size);
+		ps = psset_enumerate_search_dense(psset, pind_prev, size);
 		if (ps != NULL) {
 			return ps;
 		}
@@ -378,14 +423,23 @@ psset_pick_alloc(psset_t *psset, size_t size) {
 	if (pind == PSSET_NPSIZES) {
 		return hpdata_empty_list_first(&psset->empty);
 	}
-	ps = hpdata_age_heap_first(&psset->pageslabs[pind]);
-	if (ps == NULL) {
-		return NULL;
-	}
+	size_t alloc_ind = fb_ffs(psset->pageslab_alloc_bitmap[pind],
+	    PSSET_NALLOC_BUCKETS, (size_t)0);
+	assert(alloc_ind < PSSET_NALLOC_BUCKETS);
+	ps = hpdata_alloc_list_first(&psset->pageslabs_dense[pind][alloc_ind]);
+	assert(ps != NULL);
 
 	hpdata_assert_consistent(ps);
 
 	return ps;
+}
+
+hpdata_t *
+psset_pick_alloc(psset_t *psset, size_t size) {
+	assert((size & PAGE_MASK) == 0);
+	assert(size <= HUGEPAGE);
+
+	return psset_pick_alloc_dense(psset, size);
 }
 
 hpdata_t *

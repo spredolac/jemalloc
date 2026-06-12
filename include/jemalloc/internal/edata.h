@@ -7,7 +7,6 @@
 #include "jemalloc/internal/bit_util.h"
 #include "jemalloc/internal/hpdata.h"
 #include "jemalloc/internal/nstime.h"
-#include "jemalloc/internal/ph.h"
 #include "jemalloc/internal/ql.h"
 #include "jemalloc/internal/sc.h"
 #include "jemalloc/internal/slab_data.h"
@@ -19,16 +18,14 @@ typedef struct prof_tctx_s   prof_tctx_t;
 typedef struct prof_recent_s prof_recent_t;
 
 /*
- * sizeof(edata_t) is 128 bytes on 64-bit architectures.  Ensure the alignment
- * to free up the low bits in the rtree leaf.
+ * Align edata_t allocations to free up the low bits in the rtree leaf.
  */
 #define EDATA_ALIGNMENT 128
 
 /*
- * Defines how many nodes visited when enumerating the heap to search for
- * qualified extents.  More nodes visited may result in better choices at
- * the cost of longer search time.  This size should not exceed 2^16 - 1
- * because we use uint16_t for accessing the queue needed for enumeration.
+ * Defines how many extents visited when enumerating an eset bin to search for
+ * qualified extents.  More extents visited may result in better choices at the
+ * cost of longer search time.
  */
 #define ESET_ENUMERATE_MAX_NUM 32
 
@@ -90,16 +87,8 @@ struct edata_map_info_s {
 	szind_t szind;
 };
 
-typedef struct edata_cmp_summary_s edata_cmp_summary_t;
-struct edata_cmp_summary_s {
-	uint64_t  sn;
-	uintptr_t addr;
-};
-
 /* Extent (span of pages).  Use accessor functions for e_* fields. */
 typedef struct edata_s edata_t;
-ph_structs(edata_avail, edata_t, ESET_ENUMERATE_MAX_NUM)
-ph_structs(edata_heap, edata_t, ESET_ENUMERATE_MAX_NUM)
 struct edata_s {
 	/*
 	 * Bitfield containing several fields:
@@ -234,16 +223,8 @@ struct edata_s {
 	void *e_addr;
 
 	union {
-		/*
-		 * Extent size and serial number associated with the extent
-		 * structure (different than the serial number for the extent at
-		 * e_addr).
-		 *
-		 * ssssssss [...] ssssssss ssssnnnn nnnnnnnn
-		 */
-		size_t e_size_esn;
-#define EDATA_SIZE_MASK ((size_t) ~(PAGE - 1))
-#define EDATA_ESN_MASK ((size_t)PAGE - 1)
+		/* Extent size. */
+		size_t e_size;
 		/* Base extent size, which may not be a multiple of PAGE. */
 		size_t e_bsize;
 	};
@@ -255,28 +236,18 @@ struct edata_s {
 	 */
 	hpdata_t *e_ps;
 
-	/*
-	 * Serial number.  These are not necessarily unique; splitting an extent
-	 * results in two extents with the same serial number.
-	 */
-	uint64_t e_sn;
-
 	union {
 		/*
 		 * List linkage used when the edata_t is active; either in
 		 * arena's large allocations or bin_t's slabs_full.
 		 */
 		ql_elm(edata_t) ql_link_active;
-		/*
-		 * Pairing heap linkage.  Used whenever the extent is inactive
-		 * (in the page allocators), or when it is active and in
-		 * slabs_nonfull, or when the edata_t is unassociated with an
-		 * extent and sitting in an edata_cache.
-		 */
-		union {
-			edata_heap_link_t  heap_link;
-			edata_avail_link_t avail_link;
-		};
+		/* List linkage used by inactive extents in eset bins. */
+		ql_elm(edata_t) ql_link_eset;
+		/* List linkage used by unused base allocator extents. */
+		ql_elm(edata_t) ql_link_base_avail;
+		/* List linkage used by free edata_t objects. */
+		ql_elm(edata_t) ql_link_edata_avail;
 	};
 
 	union {
@@ -295,7 +266,15 @@ struct edata_s {
 };
 
 TYPED_LIST(edata_list_active, edata_t, ql_link_active)
+TYPED_LIST(edata_list_avail, edata_t, ql_link_edata_avail)
+TYPED_LIST(edata_list_base_avail, edata_t, ql_link_base_avail)
+TYPED_LIST(edata_list_eset, edata_t, ql_link_eset)
 TYPED_LIST(edata_list_inactive, edata_t, ql_link_inactive)
+
+static inline edata_t *
+edata_list_eset_prev(const edata_list_eset_t *list, edata_t *item) {
+	return ql_prev(&list->head, item, ql_link_eset);
+}
 
 static inline unsigned
 edata_arena_ind_get(const edata_t *edata) {
@@ -354,7 +333,7 @@ edata_usize_get(const edata_t *edata) {
 		size_t usize_from_ind = sz_index2size(szind);
 		if (!sz_large_size_classes_disabled()
 		    && usize_from_ind >= SC_LARGE_MINCLASS) {
-			size_t size = (edata->e_size_esn & EDATA_SIZE_MASK);
+			size_t size = edata->e_size;
 			assert(size > sz_large_pad);
 			size_t usize_from_size = size - sz_large_pad;
 			assert(usize_from_ind == usize_from_size);
@@ -362,7 +341,7 @@ edata_usize_get(const edata_t *edata) {
 		return usize_from_ind;
 	}
 
-	size_t size = (edata->e_size_esn & EDATA_SIZE_MASK);
+	size_t size = edata->e_size;
 	assert(size > sz_large_pad);
 	size_t usize_from_size = size - sz_large_pad;
 	/*
@@ -380,11 +359,6 @@ edata_binshard_get(const edata_t *edata) {
 	    >> EDATA_BITS_BINSHARD_SHIFT);
 	assert(binshard < bin_infos[edata_szind_get(edata)].n_shards);
 	return binshard;
-}
-
-static inline uint64_t
-edata_sn_get(const edata_t *edata) {
-	return edata->e_sn;
 }
 
 static inline extent_state_t
@@ -446,12 +420,7 @@ edata_addr_get(const edata_t *edata) {
 
 static inline size_t
 edata_size_get(const edata_t *edata) {
-	return (edata->e_size_esn & EDATA_SIZE_MASK);
-}
-
-static inline size_t
-edata_esn_get(const edata_t *edata) {
-	return (edata->e_size_esn & EDATA_ESN_MASK);
+	return edata->e_size;
 }
 
 static inline size_t
@@ -537,14 +506,8 @@ edata_addr_set(edata_t *edata, void *addr) {
 
 static inline void
 edata_size_set(edata_t *edata, size_t size) {
-	assert((size & ~EDATA_SIZE_MASK) == 0);
-	edata->e_size_esn = size | (edata->e_size_esn & ~EDATA_SIZE_MASK);
-}
-
-static inline void
-edata_esn_set(edata_t *edata, size_t esn) {
-	edata->e_size_esn = (edata->e_size_esn & ~EDATA_ESN_MASK)
-	    | (esn & EDATA_ESN_MASK);
+	assert((size & PAGE_MASK) == 0);
+	edata->e_size = size;
 }
 
 static inline void
@@ -622,11 +585,6 @@ static inline void
 edata_nfree_sub(edata_t *edata, uint64_t n) {
 	assert(edata_slab_get(edata));
 	edata->e_bits -= (n << EDATA_BITS_NFREE_SHIFT);
-}
-
-static inline void
-edata_sn_set(edata_t *edata, uint64_t sn) {
-	edata->e_sn = sn;
 }
 
 static inline void
@@ -713,8 +671,8 @@ edata_state_in_transition(extent_state_t state) {
  */
 static inline void
 edata_init(edata_t *edata, unsigned arena_ind, void *addr, size_t size,
-    bool slab, szind_t szind, uint64_t sn, extent_state_t state, bool zeroed,
-    bool committed, extent_pai_t pai, extent_head_state_t is_head) {
+    bool slab, szind_t szind, extent_state_t state, bool zeroed, bool committed,
+    extent_pai_t pai, extent_head_state_t is_head) {
 	assert(addr == PAGE_ADDR2BASE(addr) || !slab);
 
 	edata_arena_ind_set(edata, arena_ind);
@@ -722,7 +680,6 @@ edata_init(edata_t *edata, unsigned arena_ind, void *addr, size_t size,
 	edata_size_set(edata, size);
 	edata_slab_set(edata, slab);
 	edata_szind_set(edata, szind);
-	edata_sn_set(edata, sn);
 	edata_state_set(edata, state);
 	edata_guarded_set(edata, false);
 	edata_zeroed_set(edata, zeroed);
@@ -736,14 +693,12 @@ edata_init(edata_t *edata, unsigned arena_ind, void *addr, size_t size,
 }
 
 static inline void
-edata_binit(
-    edata_t *edata, void *addr, size_t bsize, uint64_t sn, bool reused) {
+edata_binit(edata_t *edata, void *addr, size_t bsize, bool reused) {
 	edata_arena_ind_set(edata, (1U << MALLOCX_ARENA_BITS) - 1);
 	edata_addr_set(edata, addr);
 	edata_bsize_set(edata, bsize);
 	edata_slab_set(edata, false);
 	edata_szind_set(edata, SC_NSIZES);
-	edata_sn_set(edata, sn);
 	edata_state_set(edata, extent_state_active);
 	/* See comments in base_edata_is_reused. */
 	edata_guarded_set(edata, reused);
@@ -757,84 +712,5 @@ edata_binit(
 	edata_pai_set(edata, EXTENT_PAI_PAC);
 	edata_hook_flags_init(edata, 0);
 }
-
-static inline int
-edata_esn_comp(const edata_t *a, const edata_t *b) {
-	size_t a_esn = edata_esn_get(a);
-	size_t b_esn = edata_esn_get(b);
-
-	return (a_esn > b_esn) - (a_esn < b_esn);
-}
-
-static inline int
-edata_ead_comp(const edata_t *a, const edata_t *b) {
-	uintptr_t a_eaddr = (uintptr_t)a;
-	uintptr_t b_eaddr = (uintptr_t)b;
-
-	return (a_eaddr > b_eaddr) - (a_eaddr < b_eaddr);
-}
-
-static inline edata_cmp_summary_t
-edata_cmp_summary_get(const edata_t *edata) {
-	edata_cmp_summary_t result;
-	result.sn = edata_sn_get(edata);
-	result.addr = (uintptr_t)edata_addr_get(edata);
-	return result;
-}
-
-#ifdef JEMALLOC_HAVE_INT128
-JEMALLOC_ALWAYS_INLINE unsigned __int128
-edata_cmp_summary_encode(edata_cmp_summary_t src) {
-	return ((unsigned __int128)src.sn << 64) | src.addr;
-}
-
-static inline int
-edata_cmp_summary_comp(edata_cmp_summary_t a, edata_cmp_summary_t b) {
-	unsigned __int128 a_encoded = edata_cmp_summary_encode(a);
-	unsigned __int128 b_encoded = edata_cmp_summary_encode(b);
-	if (a_encoded < b_encoded)
-		return -1;
-	if (a_encoded == b_encoded)
-		return 0;
-	return 1;
-}
-#else
-static inline int
-edata_cmp_summary_comp(edata_cmp_summary_t a, edata_cmp_summary_t b) {
-	/*
-	 * Logically, what we're doing here is comparing based on `.sn`, and
-	 * falling back to comparing on `.addr` in the case that `a.sn == b.sn`.
-	 * We accomplish this by multiplying the result of the `.sn` comparison
-	 * by 2, so that so long as it is not 0, it will dominate the `.addr`
-	 * comparison in determining the sign of the returned result value.
-	 * The justification for doing things this way is that this is
-	 * branchless - all of the branches that would be present in a
-	 * straightforward implementation are common cases, and thus the branch
-	 * prediction accuracy is not great. As a result, this implementation
-	 * is measurably faster (by around 30%).
-	 */
-	return (2 * ((a.sn > b.sn) - (a.sn < b.sn)))
-	    + ((a.addr > b.addr) - (a.addr < b.addr));
-}
-#endif
-
-static inline int
-edata_snad_comp(const edata_t *a, const edata_t *b) {
-	edata_cmp_summary_t a_cmp = edata_cmp_summary_get(a);
-	edata_cmp_summary_t b_cmp = edata_cmp_summary_get(b);
-
-	return edata_cmp_summary_comp(a_cmp, b_cmp);
-}
-
-static inline int
-edata_esnead_comp(const edata_t *a, const edata_t *b) {
-	/*
-	 * Similar to `edata_cmp_summary_comp`, we've opted for a
-	 * branchless implementation for the sake of performance.
-	 */
-	return (2 * edata_esn_comp(a, b)) + edata_ead_comp(a, b);
-}
-
-ph_proto(, edata_avail, edata_t) ph_proto(, edata_heap, edata_t)
 
 #endif /* JEMALLOC_INTERNAL_EDATA_H */

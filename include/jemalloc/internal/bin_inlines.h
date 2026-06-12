@@ -80,10 +80,16 @@ bin_dalloc_locked_step(tsdn_t *tsdn, bool is_auto, bin_t *bin,
 	const bin_info_t *bin_info = &bin_infos[binind];
 	size_t            regind = bin_slab_regind(info, binind, slab, ptr);
 	slab_data_t      *slab_data = edata_slab_data_get(slab);
+	unsigned          old_nfree = edata_nfree_get(slab);
+	bool              was_nonfull = slab != bin->slabcur && old_nfree > 0;
 
-	assert(edata_nfree_get(slab) < bin_info->nregs);
+	assert(old_nfree < bin_info->nregs);
 	/* Freeing an unallocated pointer can cause assertion failure. */
 	assert(bitmap_get(slab_data->bitmap, &bin_info->bitmap_info, regind));
+
+	if (was_nonfull) {
+		bin_slabs_nonfull_remove(bin, slab);
+	}
 
 	bitmap_unset(slab_data->bitmap, &bin_info->bitmap_info, regind);
 	edata_nfree_inc(slab);
@@ -94,12 +100,18 @@ bin_dalloc_locked_step(tsdn_t *tsdn, bool is_auto, bin_t *bin,
 
 	unsigned nfree = edata_nfree_get(slab);
 	if (nfree == bin_info->nregs) {
-		bin_dalloc_locked_handle_newly_empty(
-		    tsdn, is_auto, slab, bin);
+		if (was_nonfull) {
+			bin_dalloc_slab_prepare(tsdn, slab, bin);
+		} else {
+			bin_dalloc_locked_handle_newly_empty(
+			    tsdn, is_auto, slab, bin);
+		}
 		return true;
-	} else if (nfree == 1 && slab != bin->slabcur) {
+	} else if (old_nfree == 0 && slab != bin->slabcur) {
 		bin_dalloc_locked_handle_newly_nonempty(
 		    tsdn, is_auto, slab, bin);
+	} else if (was_nonfull) {
+		bin_slabs_nonfull_insert(bin, slab);
 	}
 	return false;
 }

@@ -18,15 +18,7 @@
 
 typedef struct eset_bin_s eset_bin_t;
 struct eset_bin_s {
-	edata_heap_t heap;
-	/*
-	 * We do first-fit across multiple size classes.  If we compared against
-	 * the min element in each heap directly, we'd take a cache miss per
-	 * extent we looked at.  If we co-locate the edata summaries, we only
-	 * take a miss on the edata we're actually going to return (which is
-	 * inevitable anyways).
-	 */
-	edata_cmp_summary_t heap_min;
+	edata_list_eset_t list;
 };
 
 typedef struct eset_bin_stats_s eset_bin_stats_t;
@@ -37,18 +29,18 @@ struct eset_bin_stats_s {
 
 typedef struct eset_s eset_t;
 struct eset_s {
-	/* Bitmap for which set bits correspond to non-empty heaps. */
+	/* Bitmap for which set bits correspond to non-empty lists. */
 	fb_group_t bitmap[FB_NGROUPS(SC_NPSIZES + 1)];
 
-	/* Quantized per size class heaps of extents. */
+	/* Quantized per size class MRU lists of extents. */
 	eset_bin_t bins[SC_NPSIZES + 1];
 
 	eset_bin_stats_t bin_stats[SC_NPSIZES + 1];
 
-	/* LRU of all extents in heaps. */
+	/* LRU of all extents in bins. */
 	edata_list_inactive_t lru;
 
-	/* Page sum for all extents in heaps. */
+	/* Page sum for all extents in bins. */
 	atomic_zu_t npages;
 
 	/*

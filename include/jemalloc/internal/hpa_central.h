@@ -36,6 +36,6 @@ bool hpa_central_init(
     hpa_central_t *central, base_t *base, const hpa_hooks_t *hooks);
 
 hpdata_t *hpa_central_extract(tsdn_t *tsdn, hpa_central_t *central, size_t size,
-    uint64_t age, bool hugify_eager, bool *oom);
+    bool hugify_eager, bool *oom);
 
 #endif /* JEMALLOC_INTERNAL_HPA_CENTRAL_H */

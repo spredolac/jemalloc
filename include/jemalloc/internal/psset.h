@@ -20,6 +20,7 @@
  * much space in the arena, making bitmaps that much larger, etc.
  */
 #define PSSET_NPSIZES 64
+#define PSSET_NALLOC_BUCKETS 8
 
 /*
  * We store non-hugefied and hugified pageslabs metadata separately.
@@ -88,9 +89,12 @@ struct psset_s {
 	 * The pageslabs, quantized by the size class of the largest contiguous
 	 * free run of pages in a pageslab.
 	 */
-	hpdata_age_heap_t pageslabs[PSSET_NPSIZES];
-	/* Bitmap for which set bits correspond to non-empty heaps. */
+	hpdata_alloc_list_t
+	    pageslabs_dense[PSSET_NPSIZES][PSSET_NALLOC_BUCKETS];
+	/* Bitmap for which set bits correspond to non-empty page size bins. */
 	fb_group_t    pageslab_bitmap[FB_NGROUPS(PSSET_NPSIZES)];
+	fb_group_t    pageslab_alloc_bitmap[PSSET_NPSIZES]
+	    [FB_NGROUPS(PSSET_NALLOC_BUCKETS)];
 	psset_stats_t stats;
 	/*
 	 * Slabs with no active allocations, but which are allowed to serve new

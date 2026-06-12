@@ -6,6 +6,7 @@
 #include "jemalloc/internal/bin_stats.h"
 #include "jemalloc/internal/div.h"
 #include "jemalloc/internal/edata.h"
+#include "jemalloc/internal/fb.h"
 #include "jemalloc/internal/mutex.h"
 #include "jemalloc/internal/sc.h"
 
@@ -14,6 +15,13 @@ typedef struct arena_s arena_t;
 
 #define BIN_SHARDS_MAX (1 << EDATA_BITS_BINSHARD_WIDTH)
 #define N_BIN_SHARDS_DEFAULT 1
+#define BIN_SLABSET_NBINS 8
+
+typedef struct bin_slabset_s bin_slabset_t;
+struct bin_slabset_s {
+	edata_list_active_t dense[BIN_SLABSET_NBINS];
+	fb_group_t          dense_bitmap[FB_NGROUPS(BIN_SLABSET_NBINS)];
+};
 
 /*
  * A bin contains a set of extents that are currently being used for slab
@@ -38,12 +46,8 @@ struct bin_s {
 	 */
 	edata_t *slabcur;
 
-	/*
-	 * Heap of non-full slabs.  This heap is used to assure that new
-	 * allocations come from the non-full slab that is oldest/lowest in
-	 * memory.
-	 */
-	edata_heap_t slabs_nonfull;
+	/* Non-full slabs not currently used as slabcur. */
+	bin_slabset_t slabs_nonfull;
 
 	/* List used to track full slabs. */
 	edata_list_active_t slabs_full;
@@ -73,6 +77,12 @@ void  bin_slab_reg_alloc_batch(
      edata_t *slab, const bin_info_t *bin_info, unsigned cnt, void **ptrs);
 
 /* Slab list management. */
+void     bin_slabs_nonfull_insert(bin_t *bin, edata_t *slab);
+void     bin_slabs_nonfull_remove(bin_t *bin, edata_t *slab);
+edata_t *bin_slabs_nonfull_tryget(bin_t *bin);
+edata_t *bin_slabs_nonfull_remove_first(bin_t *bin);
+edata_t *bin_slabs_nonfull_first(bin_t *bin);
+bool     bin_slabs_nonfull_empty(bin_t *bin);
 void     bin_slabs_full_remove(bool is_auto, bin_t *bin, edata_t *slab);
 
 /* Deallocation helpers (called under bin lock). */
@@ -80,6 +90,7 @@ void bin_dalloc_locked_handle_newly_empty(
     tsdn_t *tsdn, bool is_auto, edata_t *slab, bin_t *bin);
 void bin_dalloc_locked_handle_newly_nonempty(
     tsdn_t *tsdn, bool is_auto, edata_t *slab, bin_t *bin);
+void bin_dalloc_slab_prepare(tsdn_t *tsdn, edata_t *slab, bin_t *bin);
 
 /* Slabcur refill and allocation. */
 void  bin_refill_slabcur_with_fresh_slab(tsdn_t *tsdn, bin_t *bin,

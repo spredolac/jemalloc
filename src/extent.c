@@ -63,11 +63,6 @@ static bool     extent_decommit_wrapper(tsdn_t *tsdn, ehooks_t *ehooks,
 
 /******************************************************************************/
 
-size_t
-extent_sn_next(pac_t *pac) {
-	return atomic_fetch_add_zu(&pac->extent_sn_next, 1, ATOMIC_RELAXED);
-}
-
 static inline bool
 extent_may_force_decay(pac_t *pac) {
 	return !(pac_decay_ms_get(pac, extent_state_dirty) == -1
@@ -766,8 +761,8 @@ extent_grow_retained(tsdn_t *tsdn, pac_t *pac, ehooks_t *ehooks, size_t size,
 
 	unsigned ind = ecache_ind_get(&pac->ecache_retained);
 	edata_init(edata, ind, ptr, alloc_size, false, SC_NSIZES,
-	    extent_sn_next(pac), extent_state_active, zeroed, committed,
-	    EXTENT_PAI_PAC, EXTENT_IS_HEAD);
+	    extent_state_active, zeroed, committed, EXTENT_PAI_PAC,
+	    EXTENT_IS_HEAD);
 	edata_hook_flags_init(edata, flags);
 	if (flags & EXTENT_ALLOC_FLAG_PINNED) {
 		atomic_store_b(&pac->has_pinned, true, ATOMIC_RELAXED);
@@ -1159,8 +1154,8 @@ extent_alloc_wrapper(tsdn_t *tsdn, pac_t *pac, ehooks_t *ehooks, void *new_addr,
 		return NULL;
 	}
 	edata_init(edata, ecache_ind_get(&pac->ecache_dirty), addr, size,
-	    /* slab */ false, SC_NSIZES, extent_sn_next(pac),
-	    extent_state_active, zero, *commit, EXTENT_PAI_PAC,
+	    /* slab */ false, SC_NSIZES, extent_state_active, zero, *commit,
+	    EXTENT_PAI_PAC,
 	    opt_retain ? EXTENT_IS_HEAD : EXTENT_NOT_HEAD);
 	edata_hook_flags_init(edata, flags);
 	if (flags & EXTENT_ALLOC_FLAG_PINNED) {
@@ -1362,9 +1357,9 @@ extent_split_impl(tsdn_t *tsdn, pac_t *pac, ehooks_t *ehooks, edata_t *edata,
 
 	edata_init(trail, edata_arena_ind_get(edata),
 	    (void *)((byte_t *)edata_base_get(edata) + size_a), size_b,
-	    /* slab */ false, SC_NSIZES, edata_sn_get(edata),
-	    edata_state_get(edata), edata_zeroed_get(edata),
-	    edata_committed_get(edata), EXTENT_PAI_PAC, EXTENT_NOT_HEAD);
+	    /* slab */ false, SC_NSIZES, edata_state_get(edata),
+	    edata_zeroed_get(edata), edata_committed_get(edata),
+	    EXTENT_PAI_PAC, EXTENT_NOT_HEAD);
 	edata_hook_flags_init(trail, edata_alloc_flags_get(edata));
 	emap_prepare_t prepare;
 	bool           err = emap_split_prepare(
@@ -1445,9 +1440,6 @@ extent_merge_impl(tsdn_t *tsdn, pac_t *pac, ehooks_t *ehooks, edata_t *a,
 	    || edata_state_get(a) == extent_state_merging);
 	edata_state_set(a, extent_state_active);
 	edata_size_set(a, edata_size_get(a) + edata_size_get(b));
-	edata_sn_set(a,
-	    (edata_sn_get(a) < edata_sn_get(b)) ? edata_sn_get(a)
-	                                        : edata_sn_get(b));
 	edata_zeroed_set(a, edata_zeroed_get(a) && edata_zeroed_get(b));
 
 	assert(edata_pinned_get(a) == edata_pinned_get(b));

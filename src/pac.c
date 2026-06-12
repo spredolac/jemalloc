@@ -93,7 +93,6 @@ pac_init(tsdn_t *tsdn, pac_t *pac, base_t *base, emap_t *emap,
 	pac->edata_cache = edata_cache;
 	pac->stats = pac_stats;
 	pac->stats_mtx = stats_mtx;
-	atomic_store_zu(&pac->extent_sn_next, 0, ATOMIC_RELAXED);
 
 	return false;
 }

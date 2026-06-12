@@ -23,6 +23,16 @@ static extent_hooks_t hooks_not_null = {
     NULL  /* merge */
 };
 
+static size_t
+test_base_num_blocks(base_t *base) {
+	size_t nblocks = 0;
+	for (base_block_t *block = base->blocks; block != NULL;
+	     block = block->next) {
+		nblocks++;
+	}
+	return nblocks;
+}
+
 TEST_BEGIN(test_base_hooks_default) {
 	base_t *base;
 	size_t  allocated0, allocated1, edata_allocated, rtree_allocated,
@@ -176,15 +186,15 @@ TEST_BEGIN(test_base_hooks_not_null) {
 		expect_ptr_not_null(p, "Unexpected base_alloc() failure");
 	}
 	r_exp = edata_addr_get(&base->blocks->edata);
-	expect_zu_eq(base->extent_sn_next, 1, "One extant block expected");
+	expect_zu_eq(test_base_num_blocks(base), 1, "One extant block expected");
 	q = base_alloc(tsdn, base, QUANTUM + 1, QUANTUM);
 	expect_ptr_not_null(q, "Unexpected base_alloc() failure");
 	expect_ptr_ne(q, r_exp, "Expected allocation from new block");
-	expect_zu_eq(base->extent_sn_next, 2, "Two extant blocks expected");
+	expect_zu_eq(test_base_num_blocks(base), 2, "Two extant blocks expected");
 	r = base_alloc(tsdn, base, QUANTUM, QUANTUM);
 	expect_ptr_not_null(r, "Unexpected base_alloc() failure");
 	expect_ptr_eq(r, r_exp, "Expected allocation from first block");
-	expect_zu_eq(base->extent_sn_next, 2, "Two extant blocks expected");
+	expect_zu_eq(test_base_num_blocks(base), 2, "Two extant blocks expected");
 
 	/*
 	 * Check for proper alignment support when normal blocks are too small.

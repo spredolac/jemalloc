@@ -2,23 +2,9 @@
 
 #include "jemalloc/internal/hpdata.h"
 
-static int
-hpdata_age_comp(const hpdata_t *a, const hpdata_t *b) {
-	uint64_t a_age = hpdata_age_get(a);
-	uint64_t b_age = hpdata_age_get(b);
-	/*
-	 * hpdata ages are operation counts in the psset; no two should be the
-	 * same.
-	 */
-	assert(a_age != b_age);
-	return (a_age > b_age) - (a_age < b_age);
-}
-
-ph_gen(, hpdata_age_heap, hpdata_t, age_link, hpdata_age_comp)
-
-    void hpdata_init(hpdata_t *hpdata, void *addr, uint64_t age, bool is_huge) {
+void
+hpdata_init(hpdata_t *hpdata, void *addr, bool is_huge) {
 	hpdata_addr_set(hpdata, addr);
-	hpdata_age_set(hpdata, age);
 	hpdata->h_huge = is_huge;
 	hpdata->h_alloc_allowed = true;
 	hpdata->h_in_psset_alloc_container = false;
@@ -31,6 +17,7 @@ ph_gen(, hpdata_age_heap, hpdata_t, age_link, hpdata_age_comp)
 	hpdata->h_in_psset = false;
 	hpdata_longest_free_range_set(hpdata, HUGEPAGE_PAGES);
 	hpdata->h_nactive = 0;
+	hpdata->h_nallocs = 0;
 	fb_init(hpdata->active_pages, HUGEPAGE_PAGES);
 	if (is_huge) {
 		fb_set_range(
@@ -99,6 +86,7 @@ hpdata_reserve_alloc(hpdata_t *hpdata, size_t sz) {
 	result = begin;
 	fb_set_range(hpdata->active_pages, HUGEPAGE_PAGES, begin, npages);
 	hpdata->h_nactive += npages;
+	hpdata->h_nallocs++;
 
 	/*
 	 * We might be about to dirty some memory for the first time; update our
@@ -167,6 +155,9 @@ hpdata_unreserve(hpdata_t *hpdata, void *addr, size_t sz) {
 	}
 
 	hpdata->h_nactive -= npages;
+	if (hpdata->h_nallocs > 0) {
+		hpdata->h_nallocs--;
+	}
 
 	hpdata_assert_consistent(hpdata);
 }
@@ -268,6 +259,7 @@ hpdata_post_reserve_alloc_offsets(hpdata_t *hpdata, size_t sz,
 	if (nallocs == 0) {
 		return;
 	}
+	hpdata->h_nallocs += nallocs;
 
 	size_t max_len = offsets[0].len_before;
 	for (size_t i = 1; i < nallocs; i += 1) {

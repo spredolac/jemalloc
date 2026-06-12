@@ -14,14 +14,13 @@ struct emap_test_data_s {
 
 static edata_t *
 test_edata_alloc(uintptr_t addr, size_t size, bool slab, szind_t szind,
-    uint64_t sn, extent_state_t state, extent_pai_t pai,
-    extent_head_state_t is_head) {
+    extent_state_t state, extent_pai_t pai, extent_head_state_t is_head) {
 	edata_t *edata = (edata_t *)mallocx(sizeof(edata_t),
 	    MALLOCX_ALIGN(EDATA_ALIGNMENT));
 	assert_ptr_not_null(edata, "Unexpected edata allocation failure");
 	memset(edata, 0, sizeof(*edata));
 	edata_init(edata, EMAP_TEST_ARENA_IND, (void *)addr, size, slab,
-	    szind, sn, state, /* zeroed */ false, /* committed */ true, pai,
+	    szind, state, /* zeroed */ false, /* committed */ true, pai,
 	    is_head);
 	return edata;
 }
@@ -62,7 +61,7 @@ TEST_BEGIN(test_emap_register_and_lookup_slab) {
 
 	szind_t szind = 0;
 	edata_t *slab = test_edata_alloc(EMAP_TEST_ADDR_BASE, 4 * PAGE,
-	    /* slab */ true, szind, 1, extent_state_active, EXTENT_PAI_PAC,
+	    /* slab */ true, szind, extent_state_active, EXTENT_PAI_PAC,
 	    EXTENT_NOT_HEAD);
 	expect_false(emap_register_boundary(TSDN_NULL, &data->emap, slab,
 	    szind, /* slab */ true),
@@ -90,7 +89,7 @@ TEST_BEGIN(test_emap_remap_updates_szind) {
 
 	szind_t szind = 0;
 	edata_t *remap = test_edata_alloc(EMAP_TEST_ADDR_BASE + HUGEPAGE,
-	    2 * PAGE, /* slab */ false, SC_NSIZES, 2, extent_state_active,
+	    2 * PAGE, /* slab */ false, SC_NSIZES, extent_state_active,
 	    EXTENT_PAI_PAC, EXTENT_NOT_HEAD);
 	expect_false(emap_register_boundary(TSDN_NULL, &data->emap, remap,
 	    SC_NSIZES, /* slab */ false),
@@ -111,10 +110,10 @@ TEST_BEGIN(test_emap_split_then_merge) {
 
 	uintptr_t split_base = EMAP_TEST_ADDR_BASE + 2 * HUGEPAGE;
 	edata_t *lead = test_edata_alloc(split_base, 4 * PAGE,
-	    /* slab */ false, SC_NSIZES, 3, extent_state_active,
+	    /* slab */ false, SC_NSIZES, extent_state_active,
 	    EXTENT_PAI_PAC, EXTENT_NOT_HEAD);
 	edata_t *trail = test_edata_alloc(split_base + 2 * PAGE, 2 * PAGE,
-	    /* slab */ false, SC_NSIZES, 3, extent_state_active,
+	    /* slab */ false, SC_NSIZES, extent_state_active,
 	    EXTENT_PAI_PAC, EXTENT_NOT_HEAD);
 	expect_false(emap_register_boundary(TSDN_NULL, &data->emap, lead,
 	    SC_NSIZES, /* slab */ false),
@@ -162,7 +161,7 @@ TEST_BEGIN(test_emap_neighbor_acquisition) {
 	emap_test_data_t *data = emap_test_data_create();
 
 	edata_t *page_one = test_edata_alloc(PAGE, PAGE, /* slab */ false,
-	    SC_NSIZES, 1, extent_state_active, EXTENT_PAI_PAC,
+	    SC_NSIZES, extent_state_active, EXTENT_PAI_PAC,
 	    EXTENT_NOT_HEAD);
 	malloc_mutex_lock(TSDN_NULL, &data->mtx);
 	expect_ptr_null(emap_try_acquire_edata_neighbor(TSDN_NULL, &data->emap,
@@ -173,10 +172,10 @@ TEST_BEGIN(test_emap_neighbor_acquisition) {
 
 	uintptr_t base = EMAP_TEST_ADDR_BASE + 4 * HUGEPAGE;
 	edata_t *active = test_edata_alloc(base, PAGE, /* slab */ false,
-	    SC_NSIZES, 2, extent_state_active, EXTENT_PAI_PAC,
+	    SC_NSIZES, extent_state_active, EXTENT_PAI_PAC,
 	    EXTENT_NOT_HEAD);
 	edata_t *dirty = test_edata_alloc(base + PAGE, PAGE,
-	    /* slab */ false, SC_NSIZES, 3, extent_state_active,
+	    /* slab */ false, SC_NSIZES, extent_state_active,
 	    EXTENT_PAI_PAC, EXTENT_NOT_HEAD);
 	expect_false(emap_register_boundary(TSDN_NULL, &data->emap, active,
 	    SC_NSIZES, /* slab */ false), "Unexpected registration failure");
@@ -204,7 +203,7 @@ TEST_BEGIN(test_emap_neighbor_acquisition) {
 	malloc_mutex_unlock(TSDN_NULL, &data->mtx);
 
 	edata_t *hpa_neighbor = test_edata_alloc(base + 2 * PAGE, PAGE,
-	    /* slab */ false, SC_NSIZES, 4, extent_state_active,
+	    /* slab */ false, SC_NSIZES, extent_state_active,
 	    EXTENT_PAI_HPA, EXTENT_NOT_HEAD);
 	expect_false(emap_register_boundary(TSDN_NULL, &data->emap,
 	    hpa_neighbor, SC_NSIZES, /* slab */ false),

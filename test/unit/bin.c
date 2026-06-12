@@ -6,6 +6,8 @@ extern void *bin_slab_reg_alloc(edata_t *slab, const bin_info_t *bin_info);
 extern void bin_slabs_nonfull_insert(bin_t *bin, edata_t *slab);
 extern void bin_slabs_nonfull_remove(bin_t *bin, edata_t *slab);
 extern edata_t *bin_slabs_nonfull_tryget(bin_t *bin);
+extern edata_t *bin_slabs_nonfull_first(bin_t *bin);
+extern bool bin_slabs_nonfull_empty(bin_t *bin);
 extern void bin_slabs_full_insert(bool is_auto, bin_t *bin, edata_t *slab);
 extern void bin_dissociate_slab(bool is_auto, edata_t *slab, bin_t *bin);
 extern void bin_lower_slab(
@@ -16,7 +18,7 @@ extern void bin_dalloc_slab_prepare(tsdn_t *tsdn, edata_t *slab, bin_t *bin);
 
 /* Create a page-aligned mock slab with all regions free. */
 static void
-create_mock_slab(edata_t *slab, szind_t binind, uint64_t sn) {
+create_mock_slab(edata_t *slab, szind_t binind) {
 	const bin_info_t *bin_info = &bin_infos[binind];
 	void *addr;
 	slab_data_t *slab_data;
@@ -26,7 +28,7 @@ create_mock_slab(edata_t *slab, szind_t binind, uint64_t sn) {
 
 	memset(slab, 0, sizeof(edata_t));
 	edata_init(slab, INVALID_ARENA_IND, addr, bin_info->slab_size,
-	    true, binind, sn, extent_state_active, false, true,
+	    true, binind, extent_state_active, false, true,
 	    EXTENT_PAI_PAC, EXTENT_NOT_HEAD);
 	edata_nfree_set(slab, bin_info->nregs);
 
@@ -35,9 +37,6 @@ create_mock_slab(edata_t *slab, szind_t binind, uint64_t sn) {
 	bitmap_init(slab_data->bitmap, &bin_info->bitmap_info, false);
 }
 
-/*
- * Test that bin_init produces a valid empty bin.
- */
 TEST_BEGIN(test_bin_init) {
 	bin_t bin;
 	bool err;
@@ -45,8 +44,8 @@ TEST_BEGIN(test_bin_init) {
 	err = bin_init(&bin);
 	expect_false(err, "bin_init should succeed");
 	expect_ptr_null(bin.slabcur, "New bin should have NULL slabcur");
-	expect_ptr_null(edata_heap_first(&bin.slabs_nonfull),
-	    "New bin should have empty nonfull heap");
+	expect_true(bin_slabs_nonfull_empty(&bin),
+	    "New bin should have empty nonfull set");
 	expect_true(edata_list_active_empty(&bin.slabs_full),
 	    "New bin should have empty full list");
 	if (config_stats) {
@@ -72,7 +71,7 @@ TEST_BEGIN(test_bin_slab_reg_alloc) {
 	unsigned nregs;
 	unsigned i;
 
-	create_mock_slab(&slab, binind, 0);
+	create_mock_slab(&slab, binind);
 	nregs = bin_info->nregs;
 
 	for (i = 0; i < nregs; i++) {
@@ -107,7 +106,7 @@ TEST_BEGIN(test_bin_slab_reg_alloc_batch) {
 	void **ptrs;
 	unsigned i;
 
-	create_mock_slab(&slab, binind, 0);
+	create_mock_slab(&slab, binind);
 	nregs = bin_info->nregs;
 	ptrs = mallocx(nregs * sizeof(void *), 0);
 	assert_ptr_not_null(ptrs, "Unexpected mallocx failure");
@@ -147,7 +146,7 @@ TEST_BEGIN(test_bin_slab_reg_alloc_batch_partial) {
 	unsigned half;
 	void **ptrs;
 
-	create_mock_slab(&slab, binind, 0);
+	create_mock_slab(&slab, binind);
 	nregs = bin_info->nregs;
 
 	/* Only allocate half. */
@@ -179,14 +178,16 @@ TEST_BEGIN(test_bin_slabs_nonfull) {
 
 	bin_init(&bin);
 
-	/* Create two non-full slabs with different serial numbers. */
-	create_mock_slab(&slab1, binind, 1);
-	create_mock_slab(&slab2, binind, 2);
+	/* Create two non-full slabs in the same density bucket. */
+	create_mock_slab(&slab1, binind);
+	create_mock_slab(&slab2, binind);
+	(void)bin_slab_reg_alloc(&slab1, &bin_infos[binind]);
+	(void)bin_slab_reg_alloc(&slab2, &bin_infos[binind]);
 
-	/* Insert both into the nonfull heap. */
+	/* Insert both into the nonfull set. */
 	bin_slabs_nonfull_insert(&bin, &slab1);
-	expect_ptr_not_null(edata_heap_first(&bin.slabs_nonfull),
-	    "Nonfull heap should be non-empty after insert");
+	expect_ptr_not_null(bin_slabs_nonfull_first(&bin),
+	    "Nonfull set should be non-empty after insert");
 
 	bin_slabs_nonfull_insert(&bin, &slab2);
 
@@ -195,14 +196,122 @@ TEST_BEGIN(test_bin_slabs_nonfull) {
 	expect_ptr_not_null(got, "tryget should return a slab");
 
 	/* Remove the remaining one explicitly. */
-	remaining = edata_heap_first(&bin.slabs_nonfull);
+	remaining = bin_slabs_nonfull_first(&bin);
 	expect_ptr_not_null(remaining, "One slab should still remain");
 	bin_slabs_nonfull_remove(&bin, remaining);
-	expect_ptr_null(edata_heap_first(&bin.slabs_nonfull),
-	    "Nonfull heap should be empty after removing both slabs");
+	expect_true(bin_slabs_nonfull_empty(&bin),
+	    "Nonfull set should be empty after removing both slabs");
 
 	free(edata_addr_get(&slab1));
 	free(edata_addr_get(&slab2));
+}
+TEST_END
+
+TEST_BEGIN(test_bin_slabs_nonfull_dense_mru) {
+	bin_t bin;
+	szind_t binind = 0;
+	const bin_info_t *bin_info = &bin_infos[binind];
+	test_skip_if(bin_info->nregs < 3);
+
+	edata_t sparse, dense_old, dense_new;
+	bin_init(&bin);
+	create_mock_slab(&sparse, binind);
+	create_mock_slab(&dense_old, binind);
+	create_mock_slab(&dense_new, binind);
+
+	(void)bin_slab_reg_alloc(&sparse, bin_info);
+	for (unsigned i = 0; i < 2; i++) {
+		(void)bin_slab_reg_alloc(&dense_old, bin_info);
+		(void)bin_slab_reg_alloc(&dense_new, bin_info);
+	}
+
+	bin_slabs_nonfull_insert(&bin, &sparse);
+	bin_slabs_nonfull_insert(&bin, &dense_old);
+	bin_slabs_nonfull_insert(&bin, &dense_new);
+
+	expect_ptr_eq(&dense_new, bin_slabs_nonfull_tryget(&bin),
+	    "Dense set should prefer the MRU slab within a density bucket");
+	expect_ptr_eq(&dense_old, bin_slabs_nonfull_tryget(&bin),
+	    "Dense set should keep LIFO order within a density bucket");
+	expect_ptr_eq(&sparse, bin_slabs_nonfull_tryget(&bin),
+	    "Dense set should prefer denser slabs over sparse slabs");
+	expect_true(bin_slabs_nonfull_empty(&bin),
+	    "Dense nonfull set should be empty after removing all slabs");
+
+	free(edata_addr_get(&sparse));
+	free(edata_addr_get(&dense_old));
+	free(edata_addr_get(&dense_new));
+}
+TEST_END
+
+TEST_BEGIN(test_bin_slabs_nonfull_dense_mru_adjacent_counts) {
+	bin_t bin;
+	szind_t binind = 0;
+	const bin_info_t *bin_info = &bin_infos[binind];
+	test_skip_if(bin_info->nregs < 6);
+
+	edata_t dense, sparse;
+	bin_init(&bin);
+	create_mock_slab(&dense, binind);
+	create_mock_slab(&sparse, binind);
+
+	for (unsigned i = 0; i < 5; i++) {
+		(void)bin_slab_reg_alloc(&dense, bin_info);
+	}
+	for (unsigned i = 0; i < 4; i++) {
+		(void)bin_slab_reg_alloc(&sparse, bin_info);
+	}
+
+	bin_slabs_nonfull_insert(&bin, &dense);
+	bin_slabs_nonfull_insert(&bin, &sparse);
+
+	expect_ptr_eq(&dense, bin_slabs_nonfull_tryget(&bin),
+	    "Dense set should separate adjacent allocation-count buckets");
+	expect_ptr_eq(&sparse, bin_slabs_nonfull_tryget(&bin),
+	    "Dense set should keep the sparser slab after the denser slab");
+	expect_true(bin_slabs_nonfull_empty(&bin),
+	    "Dense nonfull set should be empty after removing all slabs");
+
+	free(edata_addr_get(&dense));
+	free(edata_addr_get(&sparse));
+}
+TEST_END
+
+TEST_BEGIN(test_bin_dense_dalloc_reinserts_nonfull) {
+	tsdn_t *tsdn = tsdn_fetch();
+	bin_t bin;
+	szind_t binind = 0;
+	const bin_info_t *bin_info = &bin_infos[binind];
+	test_skip_if(bin_info->nregs < 4);
+
+	edata_t slab;
+	void *ptrs[3];
+	bin_dalloc_locked_info_t info;
+
+	bin_init(&bin);
+	create_mock_slab(&slab, binind);
+	for (unsigned i = 0; i < 3; i++) {
+		ptrs[i] = bin_slab_reg_alloc(&slab, bin_info);
+	}
+	if (config_stats) {
+		bin.stats.nmalloc = 3;
+		bin.stats.curregs = 3;
+		bin.stats.nslabs = 1;
+		bin.stats.curslabs = 1;
+	}
+	bin_slabs_nonfull_insert(&bin, &slab);
+
+	malloc_mutex_lock(tsdn, &bin.lock);
+	bin_dalloc_locked_begin(&info, binind);
+	bool slab_empty = bin_dalloc_locked_step(
+	    tsdn, true, &bin, &info, binind, &slab, ptrs[0]);
+	bin_dalloc_locked_finish(tsdn, &bin, &info);
+	expect_false(slab_empty, "Slab should still contain active regions");
+	expect_ptr_eq(&slab, bin_slabs_nonfull_tryget(&bin),
+	    "Freeing a nonfull dense slab should reinsert it");
+	malloc_mutex_unlock(tsdn, &bin.lock);
+
+	free(edata_addr_get(&slab));
 }
 TEST_END
 
@@ -217,7 +326,7 @@ TEST_BEGIN(test_bin_slabs_full) {
 	unsigned i;
 
 	bin_init(&bin);
-	create_mock_slab(&slab, binind, 0);
+	create_mock_slab(&slab, binind);
 
 	/* Consume all regions so the slab appears full. */
 	for (i = 0; i < bin_info->nregs; i++) {
@@ -250,7 +359,7 @@ TEST_BEGIN(test_bin_slabs_full_auto) {
 	unsigned i;
 
 	bin_init(&bin);
-	create_mock_slab(&slab, binind, 0);
+	create_mock_slab(&slab, binind);
 	for (i = 0; i < bin_info->nregs; i++) {
 		bin_slab_reg_alloc(&slab, bin_info);
 	}
@@ -276,7 +385,7 @@ TEST_BEGIN(test_bin_dissociate_slabcur) {
 	edata_t slab;
 
 	bin_init(&bin);
-	create_mock_slab(&slab, binind, 0);
+	create_mock_slab(&slab, binind);
 
 	bin.slabcur = &slab;
 	bin_dissociate_slab(true, &slab, &bin);
@@ -288,7 +397,7 @@ TEST_BEGIN(test_bin_dissociate_slabcur) {
 TEST_END
 
 /*
- * Test dissociate_slab when the slab is in the nonfull heap.
+ * Test dissociate_slab when the slab is in the nonfull set.
  */
 TEST_BEGIN(test_bin_dissociate_nonfull) {
 	bin_t bin;
@@ -297,7 +406,7 @@ TEST_BEGIN(test_bin_dissociate_nonfull) {
 	edata_t slab;
 
 	bin_init(&bin);
-	create_mock_slab(&slab, binind, 0);
+	create_mock_slab(&slab, binind);
 
 	/*
 	 * Only dissociate from nonfull when nregs > 1.  For nregs == 1,
@@ -307,8 +416,8 @@ TEST_BEGIN(test_bin_dissociate_nonfull) {
 
 	bin_slabs_nonfull_insert(&bin, &slab);
 	bin_dissociate_slab(true, &slab, &bin);
-	expect_ptr_null(edata_heap_first(&bin.slabs_nonfull),
-	    "Nonfull heap should be empty after dissociating the slab");
+	expect_true(bin_slabs_nonfull_empty(&bin),
+	    "Nonfull set should be empty after dissociating the slab");
 
 	free(edata_addr_get(&slab));
 }
@@ -325,7 +434,7 @@ TEST_BEGIN(test_bin_refill_slabcur_with_fresh_slab) {
 	edata_t fresh;
 
 	bin_init(&bin);
-	create_mock_slab(&fresh, binind, 0);
+	create_mock_slab(&fresh, binind);
 
 	malloc_mutex_lock(tsdn, &bin.lock);
 	bin_refill_slabcur_with_fresh_slab(tsdn, &bin, binind, &fresh);
@@ -346,7 +455,7 @@ TEST_BEGIN(test_bin_refill_slabcur_with_fresh_slab) {
 TEST_END
 
 /*
- * Test refill slabcur without a fresh slab (from the nonfull heap).
+ * Test refill slabcur without a fresh slab (from the nonfull set).
  */
 TEST_BEGIN(test_bin_refill_slabcur_no_fresh_slab) {
 	tsdn_t *tsdn = tsdn_fetch();
@@ -356,23 +465,23 @@ TEST_BEGIN(test_bin_refill_slabcur_no_fresh_slab) {
 	bool empty;
 
 	bin_init(&bin);
-	create_mock_slab(&slab, binind, 0);
+	create_mock_slab(&slab, binind);
 
 	malloc_mutex_lock(tsdn, &bin.lock);
 
-	/* With no slabcur and empty nonfull heap, refill should fail. */
+	/* With no slabcur and empty nonfull set, refill should fail. */
 	empty = bin_refill_slabcur_no_fresh_slab(tsdn, true, &bin);
 	expect_true(empty,
-	    "Refill should fail when nonfull heap is empty");
+	    "Refill should fail when nonfull set is empty");
 	expect_ptr_null(bin.slabcur, "slabcur should remain NULL");
 
 	/* Insert a slab into nonfull, then refill should succeed. */
 	bin_slabs_nonfull_insert(&bin, &slab);
 	empty = bin_refill_slabcur_no_fresh_slab(tsdn, true, &bin);
 	expect_false(empty,
-	    "Refill should succeed when nonfull heap has a slab");
+	    "Refill should succeed when nonfull set has a slab");
 	expect_ptr_eq(bin.slabcur, &slab,
-	    "slabcur should be the slab from nonfull heap");
+	    "slabcur should be the slab from nonfull set");
 
 	malloc_mutex_unlock(tsdn, &bin.lock);
 	free(edata_addr_get(&slab));
@@ -392,8 +501,8 @@ TEST_BEGIN(test_bin_refill_slabcur_full_to_list) {
 	bool empty;
 
 	bin_init(&bin);
-	create_mock_slab(&full_slab, binind, 0);
-	create_mock_slab(&nonfull_slab, binind, 1);
+	create_mock_slab(&full_slab, binind);
+	create_mock_slab(&nonfull_slab, binind);
 
 	/* Make full_slab actually full. */
 	for (i = 0; i < bin_info->nregs; i++) {
@@ -430,7 +539,7 @@ TEST_BEGIN(test_bin_malloc_with_fresh_slab) {
 	void *ptr;
 
 	bin_init(&bin);
-	create_mock_slab(&fresh, binind, 0);
+	create_mock_slab(&fresh, binind);
 
 	malloc_mutex_lock(tsdn, &bin.lock);
 	ptr = bin_malloc_with_fresh_slab(tsdn, &bin, binind, &fresh);
@@ -461,7 +570,7 @@ TEST_BEGIN(test_bin_malloc_no_fresh_slab) {
 	void *ptr;
 
 	bin_init(&bin);
-	create_mock_slab(&slab, binind, 0);
+	create_mock_slab(&slab, binind);
 
 	malloc_mutex_lock(tsdn, &bin.lock);
 
@@ -500,7 +609,7 @@ TEST_BEGIN(test_bin_dalloc_locked) {
 	bool found_empty;
 
 	bin_init(&bin);
-	create_mock_slab(&slab, binind, 0);
+	create_mock_slab(&slab, binind);
 
 	/* Allocate all regions from the slab. */
 	nregs = bin_info->nregs;
@@ -564,31 +673,29 @@ TEST_BEGIN(test_bin_dalloc_locked) {
 TEST_END
 
 /*
- * Test that bin_lower_slab replaces slabcur when the new slab is older.
+ * Test that bin_lower_slab replaces a full slabcur.
  */
 TEST_BEGIN(test_bin_lower_slab_replaces_slabcur) {
 	tsdn_t *tsdn = tsdn_fetch();
 	bin_t bin;
 	szind_t binind = 0;
 	edata_t slab_old, slab_new;
+	const bin_info_t *bin_info = &bin_infos[binind];
 
 	bin_init(&bin);
 
-	/* slab_old has sn=0 (older), slab_new has sn=1 (newer). */
-	create_mock_slab(&slab_old, binind, 0);
-	create_mock_slab(&slab_new, binind, 1);
+	create_mock_slab(&slab_old, binind);
+	create_mock_slab(&slab_new, binind);
+	for (unsigned i = 0; i < bin_info->nregs; i++) {
+		(void)bin_slab_reg_alloc(&slab_new, bin_info);
+	}
 
-	/* Make slab_new the slabcur. */
 	bin.slabcur = &slab_new;
 
-	/*
-	 * bin_lower_slab with the older slab should replace slabcur and move
-	 * slab_new into either nonfull or full.
-	 */
 	malloc_mutex_lock(tsdn, &bin.lock);
 	bin_lower_slab(tsdn, true, &slab_old, &bin);
 	expect_ptr_eq(bin.slabcur, &slab_old,
-	    "Older slab should replace slabcur");
+	    "Nonfull slab should replace full slabcur");
 	malloc_mutex_unlock(tsdn, &bin.lock);
 
 	free(edata_addr_get(&slab_old));
@@ -597,8 +704,8 @@ TEST_BEGIN(test_bin_lower_slab_replaces_slabcur) {
 TEST_END
 
 /*
- * Test that bin_lower_slab inserts into the nonfull heap when the new slab
- * is newer than slabcur.
+ * Test that bin_lower_slab inserts into the nonfull set when the new slab
+ * competes with a nonfull slabcur.
  */
 TEST_BEGIN(test_bin_lower_slab_inserts_nonfull) {
 	tsdn_t *tsdn = tsdn_fetch();
@@ -607,19 +714,19 @@ TEST_BEGIN(test_bin_lower_slab_inserts_nonfull) {
 	edata_t slab_old, slab_new;
 
 	bin_init(&bin);
-	create_mock_slab(&slab_old, binind, 0);
-	create_mock_slab(&slab_new, binind, 1);
+	create_mock_slab(&slab_old, binind);
+	create_mock_slab(&slab_new, binind);
 
-	/* Make slab_old the slabcur (older). */
+	/* Make slab_old the slabcur. */
 	bin.slabcur = &slab_old;
 
-	/* bin_lower_slab with the newer slab should insert into nonfull. */
+	/* bin_lower_slab with another nonfull slab should insert into nonfull. */
 	malloc_mutex_lock(tsdn, &bin.lock);
 	bin_lower_slab(tsdn, true, &slab_new, &bin);
 	expect_ptr_eq(bin.slabcur, &slab_old,
 	    "Older slabcur should remain");
-	expect_ptr_not_null(edata_heap_first(&bin.slabs_nonfull),
-	    "Newer slab should be inserted into nonfull heap");
+	expect_ptr_not_null(bin_slabs_nonfull_first(&bin),
+	    "Newer slab should be inserted into nonfull set");
 	malloc_mutex_unlock(tsdn, &bin.lock);
 
 	free(edata_addr_get(&slab_old));
@@ -637,7 +744,7 @@ TEST_BEGIN(test_bin_dalloc_slab_prepare) {
 	edata_t slab;
 
 	bin_init(&bin);
-	create_mock_slab(&slab, binind, 0);
+	create_mock_slab(&slab, binind);
 
 	if (config_stats) {
 		bin.stats.curslabs = 2;
@@ -711,8 +818,8 @@ TEST_BEGIN(test_bin_current_slab_addr) {
 	expect_ptr_null(bin_current_slab_addr(tsdn, &bin),
 	    "Empty bin should return NULL");
 
-	create_mock_slab(&slab1, binind, 0);
-	create_mock_slab(&slab2, binind, 1);
+	create_mock_slab(&slab1, binind);
+	create_mock_slab(&slab2, binind);
 
 	/* Only nonfull set: returns first-of-nonfull addr. */
 	bin_slabs_nonfull_insert(&bin, &slab1);
@@ -797,7 +904,7 @@ TEST_BEGIN(test_bin_alloc_free_cycle) {
 	bin_dalloc_locked_info_t info;
 
 	bin_init(&bin);
-	create_mock_slab(&slab, binind, 0);
+	create_mock_slab(&slab, binind);
 
 	ptrs = mallocx(nregs * sizeof(void *), 0);
 	assert_ptr_not_null(ptrs, "Unexpected mallocx failure");
@@ -859,7 +966,7 @@ TEST_BEGIN(test_bin_multi_size_class) {
 		bin_dalloc_locked_info_t info;
 
 		bin_init(&bin);
-		create_mock_slab(&slab, binind, 0);
+		create_mock_slab(&slab, binind);
 
 		malloc_mutex_lock(tsdn, &bin.lock);
 		ptr = bin_malloc_with_fresh_slab(
@@ -896,6 +1003,9 @@ main(void) {
 	    test_bin_slab_reg_alloc_batch,
 	    test_bin_slab_reg_alloc_batch_partial,
 	    test_bin_slabs_nonfull,
+	    test_bin_slabs_nonfull_dense_mru,
+	    test_bin_slabs_nonfull_dense_mru_adjacent_counts,
+	    test_bin_dense_dalloc_reinserts_nonfull,
 	    test_bin_slabs_full,
 	    test_bin_slabs_full_auto,
 	    test_bin_dissociate_slabcur,

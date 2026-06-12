@@ -6,16 +6,13 @@
 #include "jemalloc/internal/psset.h"
 
 #define PAGESLAB_ADDR ((void *)(1234 * HUGEPAGE))
-#define PAGESLAB_AGE 5678
 
 #define ALLOC_ARENA_IND 111
-#define ALLOC_ESN 222
 
 static void
 edata_init_test(edata_t *edata) {
 	memset(edata, 0, sizeof(*edata));
 	edata_arena_ind_set(edata, ALLOC_ARENA_IND);
-	edata_esn_set(edata, ALLOC_ESN);
 }
 
 static void
@@ -45,7 +42,7 @@ test_psset_alloc_new(
 
 	void *addr = hpdata_reserve_alloc(ps, size);
 	edata_init(r_edata, edata_arena_ind_get(r_edata), addr, size,
-	    /* slab */ false, SC_NSIZES, /* sn */ 0, extent_state_active,
+	    /* slab */ false, SC_NSIZES, extent_state_active,
 	    /* zeroed */ false, /* committed */ true, EXTENT_PAI_HPA,
 	    EXTENT_NOT_HEAD);
 	edata_ps_set(r_edata, ps);
@@ -61,7 +58,7 @@ test_psset_alloc_reuse(psset_t *psset, edata_t *r_edata, size_t size) {
 	psset_update_begin(psset, ps);
 	void *addr = hpdata_reserve_alloc(ps, size);
 	edata_init(r_edata, edata_arena_ind_get(r_edata), addr, size,
-	    /* slab */ false, SC_NSIZES, /* sn */ 0, extent_state_active,
+	    /* slab */ false, SC_NSIZES, extent_state_active,
 	    /* zeroed */ false, /* committed */ true, EXTENT_PAI_HPA,
 	    EXTENT_NOT_HEAD);
 	edata_ps_set(r_edata, ps);
@@ -115,7 +112,6 @@ edata_expect(edata_t *edata, size_t page_offset, size_t page_cnt) {
 	expect_zu_eq(page_cnt << LG_PAGE, edata_size_get(edata), "");
 	expect_false(edata_slab_get(edata), "");
 	expect_u_eq(SC_NSIZES, edata_szind_get_maybe_invalid(edata), "");
-	expect_u64_eq(0, edata_sn_get(edata), "");
 	expect_d_eq(edata_state_get(edata), extent_state_active, "");
 	expect_false(edata_zeroed_get(edata), "");
 	expect_true(edata_committed_get(edata), "");
@@ -128,7 +124,7 @@ TEST_BEGIN(test_empty) {
 	bool     err;
 	hpdata_t pageslab;
 	hpdata_init(
-	    &pageslab, PAGESLAB_ADDR, PAGESLAB_AGE, /* is_huge */ false);
+	    &pageslab, PAGESLAB_ADDR, /* is_huge */ false);
 
 	edata_t alloc;
 	edata_init_test(&alloc);
@@ -148,7 +144,7 @@ TEST_BEGIN(test_fill) {
 
 	hpdata_t pageslab;
 	hpdata_init(
-	    &pageslab, PAGESLAB_ADDR, PAGESLAB_AGE, /* is_huge */ false);
+	    &pageslab, PAGESLAB_ADDR, /* is_huge */ false);
 
 	edata_t *alloc = (edata_t *)malloc(sizeof(edata_t) * HUGEPAGE_PAGES);
 
@@ -185,7 +181,7 @@ TEST_BEGIN(test_reuse) {
 
 	hpdata_t pageslab;
 	hpdata_init(
-	    &pageslab, PAGESLAB_ADDR, PAGESLAB_AGE, /* is_huge */ false);
+	    &pageslab, PAGESLAB_ADDR, /* is_huge */ false);
 
 	edata_t *alloc = (edata_t *)malloc(sizeof(edata_t) * HUGEPAGE_PAGES);
 
@@ -281,7 +277,7 @@ TEST_BEGIN(test_evict) {
 
 	hpdata_t pageslab;
 	hpdata_init(
-	    &pageslab, PAGESLAB_ADDR, PAGESLAB_AGE, /* is_huge */ false);
+	    &pageslab, PAGESLAB_ADDR, /* is_huge */ false);
 
 	edata_t *alloc = (edata_t *)malloc(sizeof(edata_t) * HUGEPAGE_PAGES);
 
@@ -319,9 +315,10 @@ TEST_BEGIN(test_multi_pageslab) {
 
 	hpdata_t pageslab[2];
 	hpdata_init(
-	    &pageslab[0], PAGESLAB_ADDR, PAGESLAB_AGE, /* is_huge */ false);
-	hpdata_init(&pageslab[1], (void *)((uintptr_t)PAGESLAB_ADDR + HUGEPAGE),
-	    PAGESLAB_AGE + 1, /* is_huge */ false);
+	    &pageslab[0], PAGESLAB_ADDR, /* is_huge */ false);
+	hpdata_init(&pageslab[1],
+	    (void *)((uintptr_t)PAGESLAB_ADDR + HUGEPAGE),
+	    /* is_huge */ false);
 
 	edata_t *alloc[2];
 	alloc[0] = (edata_t *)malloc(sizeof(edata_t) * HUGEPAGE_PAGES);
@@ -336,8 +333,8 @@ TEST_BEGIN(test_multi_pageslab) {
 	edata_init_test(&alloc[1][0]);
 	test_psset_alloc_new(&psset, &pageslab[1], &alloc[1][0], PAGE);
 
-	/* Fill them both up; make sure we do so in first-fit order. */
-	for (size_t i = 0; i < 2; i++) {
+	/* Fill them both up; make sure we prefer the most recent pageslab. */
+	for (ssize_t i = 1; i >= 0; i--) {
 		for (size_t j = 1; j < HUGEPAGE_PAGES; j++) {
 			edata_init_test(&alloc[i][j]);
 			err = test_psset_alloc_reuse(
@@ -345,7 +342,7 @@ TEST_BEGIN(test_multi_pageslab) {
 			expect_false(
 			    err, "Nonempty psset failed page allocation.");
 			assert_ptr_eq(&pageslab[i], edata_ps_get(&alloc[i][j]),
-			    "Didn't pick pageslabs in first-fit");
+			    "Didn't pick pageslabs in dense MRU order");
 		}
 	}
 
@@ -385,7 +382,7 @@ TEST_END
 TEST_BEGIN(test_stats_merged) {
 	hpdata_t pageslab;
 	hpdata_init(
-	    &pageslab, PAGESLAB_ADDR, PAGESLAB_AGE, /* is_huge */ false);
+	    &pageslab, PAGESLAB_ADDR, /* is_huge */ false);
 
 	edata_t *alloc = (edata_t *)malloc(sizeof(edata_t) * HUGEPAGE_PAGES);
 
@@ -452,7 +449,7 @@ TEST_BEGIN(test_stats_huge) {
 
 	hpdata_t pageslab;
 	hpdata_init(
-	    &pageslab, PAGESLAB_ADDR, PAGESLAB_AGE, /* is_huge */ false);
+	    &pageslab, PAGESLAB_ADDR, /* is_huge */ false);
 
 	edata_t *alloc = (edata_t *)malloc(sizeof(edata_t) * HUGEPAGE_PAGES);
 
@@ -573,6 +570,24 @@ stats_expect(psset_t *psset, size_t nactive) {
 	expect_zu_eq(nactive, psset_nactive(psset), "");
 }
 
+static pszind_t
+test_psset_lfr_pind(hpdata_t *ps) {
+	size_t longest_free_range = hpdata_longest_free_range_get(ps);
+	return sz_psz2ind(
+	    sz_psz_quantize_floor(longest_free_range << LG_PAGE));
+}
+
+static void
+test_psset_alloc_count_new(psset_t *psset, hpdata_t *ps, size_t nallocs) {
+	psset_insert(psset, ps);
+	psset_update_begin(psset, ps);
+	for (size_t i = 0; i < nallocs; i++) {
+		void *alloc = hpdata_reserve_alloc(ps, PAGE);
+		expect_ptr_not_null(alloc, "Unexpected hpdata alloc failure");
+	}
+	psset_update_end(psset, ps);
+}
+
 TEST_BEGIN(test_stats_fullness) {
 	test_skip_if(!config_stats);
 	test_skip_if(hpa_hugepage_size_exceeds_limit());
@@ -581,7 +596,7 @@ TEST_BEGIN(test_stats_fullness) {
 
 	hpdata_t pageslab;
 	hpdata_init(
-	    &pageslab, PAGESLAB_ADDR, PAGESLAB_AGE, /* is_huge */ false);
+	    &pageslab, PAGESLAB_ADDR, /* is_huge */ false);
 
 	edata_t *alloc = (edata_t *)malloc(sizeof(edata_t) * HUGEPAGE_PAGES);
 
@@ -619,27 +634,21 @@ TEST_BEGIN(test_stats_fullness) {
 TEST_END
 
 /*
- * Fills in and inserts two pageslabs, with the first better than the second,
- * and each fully allocated (into the allocations in allocs and worse_allocs,
- * each of which should be HUGEPAGE_PAGES long), except for a single free page
- * at the end.
+ * Fills in and inserts two pageslabs, then deallocates from the first so that
+ * it becomes the most recently used nonfull pageslab.
  *
  * (There's nothing magic about these numbers; it's just useful to share the
- * setup between the oldest fit and the insert/remove test).
+ * setup between the MRU and insert/remove tests).
  */
 static void
 init_test_pageslabs(psset_t *psset, hpdata_t *pageslab,
     hpdata_t *worse_pageslab, edata_t *alloc, edata_t *worse_alloc) {
 	bool err;
 
-	hpdata_init(pageslab, (void *)(10 * HUGEPAGE), PAGESLAB_AGE,
-	    /* is_huge */ false);
-	/*
-	 * This pageslab would be better from an address-first-fit POV, but
-	 * worse from an age POV.
-	 */
-	hpdata_init(worse_pageslab, (void *)(9 * HUGEPAGE), PAGESLAB_AGE + 1,
-	    /* is_huge */ false);
+	hpdata_init(
+	    pageslab, (void *)(10 * HUGEPAGE), /* is_huge */ false);
+	hpdata_init(
+	    worse_pageslab, (void *)(9 * HUGEPAGE), /* is_huge */ false);
 
 	psset_init(psset);
 
@@ -675,7 +684,7 @@ init_test_pageslabs(psset_t *psset, hpdata_t *pageslab,
 	expect_ptr_null(evicted, "Unexpected eviction");
 }
 
-TEST_BEGIN(test_oldest_fit) {
+TEST_BEGIN(test_dense_mru_after_deallocation) {
 	test_skip_if(hpa_hugepage_size_exceeds_limit());
 	bool     err;
 	edata_t *alloc = (edata_t *)malloc(sizeof(edata_t) * HUGEPAGE_PAGES);
@@ -690,7 +699,7 @@ TEST_BEGIN(test_oldest_fit) {
 	init_test_pageslabs(
 	    &psset, &pageslab, &worse_pageslab, alloc, worse_alloc);
 
-	/* The edata should come from the better pageslab. */
+	/* The edata should come from the most recently updated pageslab. */
 	edata_t test_edata;
 	edata_init_test(&test_edata);
 	err = test_psset_alloc_reuse(&psset, &test_edata, PAGE);
@@ -700,6 +709,122 @@ TEST_BEGIN(test_oldest_fit) {
 
 	free(alloc);
 	free(worse_alloc);
+}
+TEST_END
+
+TEST_BEGIN(test_dense_mru_tie) {
+	test_skip_if(hpa_hugepage_size_exceeds_limit());
+
+	psset_t psset;
+	psset_init(&psset);
+
+	hpdata_t older;
+	hpdata_t newer;
+	hpdata_init(&older, (void *)(10 * HUGEPAGE), /* is_huge */ false);
+	hpdata_init(&newer, (void *)(11 * HUGEPAGE), /* is_huge */ false);
+
+	edata_t older_alloc;
+	edata_t newer_alloc;
+	edata_init_test(&older_alloc);
+	edata_init_test(&newer_alloc);
+	test_psset_alloc_new(&psset, &older, &older_alloc, PAGE);
+	test_psset_alloc_new(&psset, &newer, &newer_alloc, PAGE);
+
+	hpdata_t *picked = psset_pick_alloc(&psset, PAGE);
+	expect_ptr_eq(&newer, picked,
+	    "Dense psset should use MRU order among equal-density slabs");
+}
+TEST_END
+
+TEST_BEGIN(test_dense_prefers_more_allocations) {
+	test_skip_if(hpa_hugepage_size_exceeds_limit());
+
+	psset_t psset;
+	psset_init(&psset);
+
+	hpdata_t dense;
+	hpdata_t sparse;
+	hpdata_init(&dense, (void *)(10 * HUGEPAGE), /* is_huge */ false);
+	hpdata_init(&sparse, (void *)(11 * HUGEPAGE), /* is_huge */ false);
+
+	edata_t dense_alloc[2];
+	edata_t sparse_alloc;
+	for (unsigned i = 0; i < 2; i++) {
+		edata_init_test(&dense_alloc[i]);
+	}
+	edata_init_test(&sparse_alloc);
+
+	test_psset_alloc_new(&psset, &dense, &dense_alloc[0], PAGE);
+	bool err = test_psset_alloc_reuse(&psset, &dense_alloc[1], PAGE);
+	expect_false(err, "Second dense allocation should succeed");
+	test_psset_alloc_new(&psset, &sparse, &sparse_alloc, PAGE);
+
+	if (test_psset_lfr_pind(&dense) != test_psset_lfr_pind(&sparse)) {
+		test_skip("Dense and sparse slabs did not land in the same "
+		    "LFR bucket");
+		goto label_test_end;
+	}
+
+	hpdata_t *picked = psset_pick_alloc(&psset, PAGE);
+	expect_ptr_eq(&dense, picked,
+	    "Dense psset should prefer more active allocation reservations");
+}
+TEST_END
+
+TEST_BEGIN(test_dense_prefers_adjacent_allocation_count) {
+	test_skip_if(hpa_hugepage_size_exceeds_limit());
+
+	psset_t psset;
+	psset_init(&psset);
+
+	hpdata_t dense;
+	hpdata_t sparse;
+	hpdata_init(&dense, (void *)(10 * HUGEPAGE), /* is_huge */ false);
+	hpdata_init(&sparse, (void *)(11 * HUGEPAGE), /* is_huge */ false);
+
+	test_psset_alloc_count_new(&psset, &dense, 5);
+	test_psset_alloc_count_new(&psset, &sparse, 4);
+
+	if (test_psset_lfr_pind(&dense) != test_psset_lfr_pind(&sparse)) {
+		test_skip("Dense and sparse slabs did not land in the same "
+		    "LFR bucket");
+		goto label_test_end;
+	}
+
+	hpdata_t *picked = psset_pick_alloc(&psset, PAGE);
+	expect_ptr_eq(&dense, picked,
+	    "Dense psset should separate adjacent allocation-count buckets");
+}
+TEST_END
+
+TEST_BEGIN(test_dense_enumerate_previous_lfr_bucket) {
+	test_skip_if(hpa_hugepage_size_exceeds_limit());
+	test_skip_if(!sz_large_size_classes_disabled());
+
+	size_t request = 0;
+	for (size_t npages = 2; npages < HUGEPAGE_PAGES; npages++) {
+		size_t size = npages << LG_PAGE;
+		if (sz_psz_quantize_floor(size) != sz_psz_quantize_ceil(size)) {
+			request = size;
+			break;
+		}
+	}
+	test_skip_if(request == 0);
+
+	psset_t psset;
+	psset_init(&psset);
+
+	hpdata_t ps;
+	hpdata_init(&ps, (void *)(10 * HUGEPAGE), /* is_huge */ false);
+	psset_insert(&psset, &ps);
+	psset_update_begin(&psset, &ps);
+	void *alloc = hpdata_reserve_alloc(&ps, HUGEPAGE - request);
+	expect_ptr_eq(hpdata_addr_get(&ps), alloc, "");
+	psset_update_end(&psset, &ps);
+
+	hpdata_t *picked = psset_pick_alloc(&psset, request);
+	expect_ptr_eq(&ps, picked,
+	    "Dense psset should preserve previous-LFR-bucket search");
 }
 TEST_END
 
@@ -778,13 +903,12 @@ TEST_BEGIN(test_purge_prefers_nonhuge) {
 	uintptr_t nonhuge_end = (uintptr_t)&hpdata_nonhuge[NHP];
 
 	for (size_t i = 0; i < NHP; i++) {
-		hpdata_init(&hpdata_huge[i], (void *)((10 + i) * HUGEPAGE),
-		    123 + i, /* is_huge */ false);
+		hpdata_init(&hpdata_huge[i],
+		    (void *)((10 + i) * HUGEPAGE), /* is_huge */ false);
 		psset_insert(&psset, &hpdata_huge[i]);
 
 		hpdata_init(&hpdata_nonhuge[i],
-		    (void *)((10 + NHP + i) * HUGEPAGE), 456 + i,
-		    /* is_huge */ false);
+		    (void *)((10 + NHP + i) * HUGEPAGE), /* is_huge */ false);
 		psset_insert(&psset, &hpdata_nonhuge[i]);
 	}
 	for (int i = 0; i < 2 * NHP; i++) {
@@ -855,11 +979,14 @@ TEST_BEGIN(test_purge_timing) {
 	nstime_init2(&basetime, BASE_SEC, 0);
 
 	/* Create and add to psset */
-	hpdata_init(&hpdata_empty_nh, (void *)(9 * HUGEPAGE), 102, false);
+	hpdata_init(
+	    &hpdata_empty_nh, (void *)(9 * HUGEPAGE), /* is_huge */ false);
 	psset_insert(&psset, &hpdata_empty_nh);
-	hpdata_init(&hpdata_empty_huge, (void *)(10 * HUGEPAGE), 123, true);
+	hpdata_init(
+	    &hpdata_empty_huge, (void *)(10 * HUGEPAGE), /* is_huge */ true);
 	psset_insert(&psset, &hpdata_empty_huge);
-	hpdata_init(&hpdata_nonempty, (void *)(11 * HUGEPAGE), 456, false);
+	hpdata_init(
+	    &hpdata_nonempty, (void *)(11 * HUGEPAGE), /* is_huge */ false);
 	psset_insert(&psset, &hpdata_nonempty);
 
 	psset_update_begin(&psset, &hpdata_empty_nh);
@@ -915,9 +1042,9 @@ TEST_BEGIN(test_purge_prefers_empty) {
 	hpdata_t hpdata_empty;
 	hpdata_t hpdata_nonempty;
 	hpdata_init(
-	    &hpdata_empty, (void *)(10 * HUGEPAGE), 123, /* is_huge */ false);
+	    &hpdata_empty, (void *)(10 * HUGEPAGE), /* is_huge */ false);
 	psset_insert(&psset, &hpdata_empty);
-	hpdata_init(&hpdata_nonempty, (void *)(11 * HUGEPAGE), 456,
+	hpdata_init(&hpdata_nonempty, (void *)(11 * HUGEPAGE),
 	    /* is_huge */ false);
 	psset_insert(&psset, &hpdata_nonempty);
 
@@ -965,7 +1092,8 @@ TEST_BEGIN(test_pick_purge_underflow) {
 	nstime_t       future_tm, now;
 	const uint64_t BASE_SEC = 1000;
 
-	hpdata_init(&hpdata_lowest, (void *)(10 * HUGEPAGE), 100, false);
+	hpdata_init(
+	    &hpdata_lowest, (void *)(10 * HUGEPAGE), /* is_huge */ false);
 	psset_insert(&psset, &hpdata_lowest);
 
 	psset_update_begin(&psset, &hpdata_lowest);
@@ -1009,18 +1137,15 @@ TEST_BEGIN(test_purge_prefers_empty_huge) {
 	hpdata_t hpdata_nonhuge[NHP];
 
 	uintptr_t cur_addr = 100 * HUGEPAGE;
-	uint64_t  cur_age = 123;
 	for (int i = 0; i < NHP; i++) {
-		hpdata_init(&hpdata_huge[i], (void *)cur_addr, cur_age,
+		hpdata_init(&hpdata_huge[i], (void *)cur_addr,
 		    /* is_huge */ false);
 		cur_addr += HUGEPAGE;
-		cur_age++;
 		psset_insert(&psset, &hpdata_huge[i]);
 
-		hpdata_init(&hpdata_nonhuge[i], (void *)cur_addr, cur_age,
+		hpdata_init(&hpdata_nonhuge[i], (void *)cur_addr,
 		    /* is_huge */ false);
 		cur_addr += HUGEPAGE;
-		cur_age++;
 		psset_insert(&psset, &hpdata_nonhuge[i]);
 
 		/*
@@ -1073,7 +1198,11 @@ int
 main(void) {
 	return test_no_reentrancy(test_empty, test_fill, test_reuse, test_evict,
 	    test_multi_pageslab, test_stats_merged, test_stats_huge,
-	    test_stats_fullness, test_oldest_fit, test_insert_remove,
+	    test_stats_fullness, test_dense_mru_after_deallocation,
+	    test_dense_mru_tie,
+	    test_dense_prefers_more_allocations,
+	    test_dense_prefers_adjacent_allocation_count,
+	    test_dense_enumerate_previous_lfr_bucket, test_insert_remove,
 	    test_purge_prefers_nonhuge, test_purge_timing,
 	    test_purge_prefers_empty, test_pick_purge_underflow,
 	    test_purge_prefers_empty_huge);

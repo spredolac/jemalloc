@@ -33,7 +33,7 @@ hpa_alloc_ps(tsdn_t *tsdn, hpa_central_t *central) {
 
 hpdata_t *
 hpa_central_extract(tsdn_t *tsdn, hpa_central_t *central, size_t size,
-    uint64_t age, bool hugify_eager, bool *oom) {
+    bool hugify_eager, bool *oom) {
 	/* Don't yet support big allocations; these should get filtered out. */
 	assert(size <= HUGEPAGE);
 	/*
@@ -59,7 +59,7 @@ hpa_central_extract(tsdn_t *tsdn, hpa_central_t *central, size_t size,
 			malloc_mutex_unlock(tsdn, &central->grow_mtx);
 			return NULL;
 		}
-		hpdata_init(ps, central->eden, age, start_as_huge);
+		hpdata_init(ps, central->eden, start_as_huge);
 		central->eden = NULL;
 		central->eden_len = 0;
 		malloc_mutex_unlock(tsdn, &central->grow_mtx);
@@ -107,7 +107,7 @@ hpa_central_extract(tsdn_t *tsdn, hpa_central_t *central, size_t size,
 	assert(central->eden_len % HUGEPAGE == 0);
 	assert(HUGEPAGE_ADDR2BASE(central->eden) == central->eden);
 
-	hpdata_init(ps, central->eden, age, start_as_huge);
+	hpdata_init(ps, central->eden, start_as_huge);
 
 	char *eden_char = (char *)central->eden;
 	eden_char += HUGEPAGE;

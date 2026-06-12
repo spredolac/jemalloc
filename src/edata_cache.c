@@ -5,7 +5,7 @@
 
 bool
 edata_cache_init(edata_cache_t *edata_cache, base_t *base) {
-	edata_avail_new(&edata_cache->avail);
+	edata_list_avail_init(&edata_cache->avail);
 	/*
 	 * This is not strictly necessary, since the edata_cache_t is only
 	 * created inside an arena, which is zeroed on creation.  But this is
@@ -23,12 +23,12 @@ edata_cache_init(edata_cache_t *edata_cache, base_t *base) {
 edata_t *
 edata_cache_get(tsdn_t *tsdn, edata_cache_t *edata_cache) {
 	malloc_mutex_lock(tsdn, &edata_cache->mtx);
-	edata_t *edata = edata_avail_first(&edata_cache->avail);
+	edata_t *edata = edata_list_avail_last(&edata_cache->avail);
 	if (edata == NULL) {
 		malloc_mutex_unlock(tsdn, &edata_cache->mtx);
 		return base_alloc_edata(tsdn, edata_cache->base);
 	}
-	edata_avail_remove(&edata_cache->avail, edata);
+	edata_list_avail_remove(&edata_cache->avail, edata);
 	atomic_load_sub_store_zu(&edata_cache->count, 1);
 	malloc_mutex_unlock(tsdn, &edata_cache->mtx);
 	return edata;
@@ -37,7 +37,7 @@ edata_cache_get(tsdn_t *tsdn, edata_cache_t *edata_cache) {
 void
 edata_cache_put(tsdn_t *tsdn, edata_cache_t *edata_cache, edata_t *edata) {
 	malloc_mutex_lock(tsdn, &edata_cache->mtx);
-	edata_avail_insert(&edata_cache->avail, edata);
+	edata_list_avail_append(&edata_cache->avail, edata);
 	atomic_load_add_store_zu(&edata_cache->count, 1);
 	malloc_mutex_unlock(tsdn, &edata_cache->mtx);
 }
@@ -69,10 +69,11 @@ edata_cache_fast_try_fill_from_fallback(tsdn_t *tsdn, edata_cache_fast_t *ecs) {
 	edata_t *edata;
 	malloc_mutex_lock(tsdn, &ecs->fallback->mtx);
 	for (int i = 0; i < EDATA_CACHE_FAST_FILL; i++) {
-		edata = edata_avail_remove_first(&ecs->fallback->avail);
+		edata = edata_list_avail_last(&ecs->fallback->avail);
 		if (edata == NULL) {
 			break;
 		}
+		edata_list_avail_remove(&ecs->fallback->avail, edata);
 		edata_list_inactive_append(&ecs->list, edata);
 		atomic_load_sub_store_zu(&ecs->fallback->count, 1);
 	}
@@ -121,9 +122,9 @@ edata_cache_fast_flush_all(tsdn_t *tsdn, edata_cache_fast_t *ecs) {
 	edata_t *edata;
 	size_t   nflushed = 0;
 	malloc_mutex_lock(tsdn, &ecs->fallback->mtx);
-	while ((edata = edata_list_inactive_first(&ecs->list)) != NULL) {
+	while ((edata = edata_list_inactive_last(&ecs->list)) != NULL) {
 		edata_list_inactive_remove(&ecs->list, edata);
-		edata_avail_insert(&ecs->fallback->avail, edata);
+		edata_list_avail_append(&ecs->fallback->avail, edata);
 		nflushed++;
 	}
 	atomic_load_add_store_zu(&ecs->fallback->count, nflushed);

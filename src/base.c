@@ -127,14 +127,8 @@ base_edata_is_reused(const edata_t *edata) {
 }
 
 static void
-base_edata_init(
-    size_t *extent_sn_next, edata_t *edata, void *addr, size_t size) {
-	size_t sn;
-
-	sn = *extent_sn_next;
-	(*extent_sn_next)++;
-
-	edata_binit(edata, addr, size, sn, false /* is_reused */);
+base_edata_init(edata_t *edata, void *addr, size_t size) {
+	edata_binit(edata, addr, size, false /* is_reused */);
 }
 
 static size_t
@@ -258,13 +252,13 @@ base_extent_bump_alloc_helper(
 	assert(edata_bsize_get(edata) >= *gap_size + size);
 	edata_binit(edata,
 	    (void *)((byte_t *)edata_addr_get(edata) + *gap_size + size),
-	    edata_bsize_get(edata) - *gap_size - size, edata_sn_get(edata),
+	    edata_bsize_get(edata) - *gap_size - size,
 	    base_edata_is_reused(edata));
 	return ret;
 }
 
 static void
-base_edata_heap_insert(tsdn_t *tsdn, base_t *base, edata_t *edata) {
+base_extent_avail_insert(tsdn_t *tsdn, base_t *base, edata_t *edata) {
 	malloc_mutex_assert_owner(tsdn, &base->mtx);
 
 	size_t bsize = edata_bsize_get(edata);
@@ -274,7 +268,7 @@ base_edata_heap_insert(tsdn_t *tsdn, base_t *base, edata_t *edata) {
 	 * extent's size.
 	 */
 	szind_t index_floor = sz_size2index(bsize + 1) - 1;
-	edata_heap_insert(&base->avail[index_floor], edata);
+	edata_list_base_avail_append(&base->avail[index_floor], edata);
 }
 
 /*
@@ -286,9 +280,9 @@ base_alloc_base_edata(tsdn_t *tsdn, base_t *base) {
 	edata_t *edata;
 
 	malloc_mutex_lock(tsdn, &base->mtx);
-	edata = edata_avail_first(&base->edata_avail);
+	edata = edata_list_avail_last(&base->edata_avail);
 	if (edata != NULL) {
-		edata_avail_remove(&base->edata_avail, edata);
+		edata_list_avail_remove(&base->edata_avail, edata);
 	}
 	malloc_mutex_unlock(tsdn, &base->mtx);
 
@@ -303,10 +297,10 @@ static void
 base_extent_bump_alloc_post(tsdn_t *tsdn, base_t *base, edata_t *edata,
     size_t gap_size, void *addr, size_t size) {
 	if (edata_bsize_get(edata) > 0) {
-		base_edata_heap_insert(tsdn, base, edata);
+		base_extent_avail_insert(tsdn, base, edata);
 	} else {
 		/* Freed base edata_t stored in edata_avail. */
-		edata_avail_insert(&base->edata_avail, edata);
+		edata_list_avail_append(&base->edata_avail, edata);
 	}
 
 	if (config_stats && !base_edata_is_reused(edata)) {
@@ -357,8 +351,7 @@ base_block_size_ceil(size_t block_size) {
  */
 static base_block_t *
 base_block_alloc(tsdn_t *tsdn, base_t *base, ehooks_t *ehooks, unsigned ind,
-    pszind_t *pind_last, size_t *extent_sn_next, size_t size,
-    size_t alignment) {
+    pszind_t *pind_last, size_t size, size_t alignment) {
 	alignment = ALIGNMENT_CEILING(alignment, QUANTUM);
 	size_t usize = ALIGNMENT_CEILING(size, alignment);
 	size_t header_size = sizeof(base_block_t);
@@ -408,7 +401,7 @@ base_block_alloc(tsdn_t *tsdn, base_t *base, ehooks_t *ehooks, unsigned ind,
 	block->size = block_size;
 	block->next = NULL;
 	assert(block_size >= header_size);
-	base_edata_init(extent_sn_next, &block->edata,
+	base_edata_init(&block->edata,
 	    (void *)((byte_t *)block + header_size), block_size - header_size);
 	return block;
 }
@@ -428,8 +421,7 @@ base_extent_alloc(tsdn_t *tsdn, base_t *base, size_t size, size_t alignment) {
 	 */
 	malloc_mutex_unlock(tsdn, &base->mtx);
 	base_block_t *block = base_block_alloc(tsdn, base, ehooks,
-	    base_ind_get(base), &base->pind_last, &base->extent_sn_next, size,
-	    alignment);
+	    base_ind_get(base), &base->pind_last, size, alignment);
 	malloc_mutex_lock(tsdn, &base->mtx);
 	if (block == NULL) {
 		return NULL;
@@ -463,7 +455,6 @@ base_t *
 base_new(tsdn_t *tsdn, unsigned ind, const extent_hooks_t *extent_hooks,
     bool metadata_use_hooks) {
 	pszind_t pind_last = 0;
-	size_t   extent_sn_next = 0;
 
 	/*
 	 * The base will contain the ehooks eventually, but it itself is
@@ -477,7 +468,7 @@ base_new(tsdn_t *tsdn, unsigned ind, const extent_hooks_t *extent_hooks,
 	    ind);
 
 	base_block_t *block = base_block_alloc(tsdn, NULL, &fake_ehooks, ind,
-	    &pind_last, &extent_sn_next, sizeof(base_t), QUANTUM);
+	    &pind_last, sizeof(base_t), QUANTUM);
 	if (block == NULL) {
 		return NULL;
 	}
@@ -498,13 +489,12 @@ base_new(tsdn_t *tsdn, unsigned ind, const extent_hooks_t *extent_hooks,
 		return NULL;
 	}
 	base->pind_last = pind_last;
-	base->extent_sn_next = extent_sn_next;
 	base->blocks = block;
 	base->auto_thp_switched = false;
 	for (szind_t i = 0; i < SC_NSIZES; i++) {
-		edata_heap_new(&base->avail[i]);
+		edata_list_base_avail_init(&base->avail[i]);
 	}
-	edata_avail_new(&base->edata_avail);
+	edata_list_avail_init(&base->edata_avail);
 
 	if (config_stats) {
 		base->edata_allocated = 0;
@@ -562,7 +552,7 @@ base_extent_hooks_set(base_t *base, extent_hooks_t *extent_hooks) {
 
 static void *
 base_alloc_impl(tsdn_t *tsdn, base_t *base, size_t size, size_t alignment,
-    size_t *esn, size_t *ret_usize) {
+    size_t *ret_usize) {
 	alignment = QUANTUM_CEILING(alignment);
 	size_t usize = ALIGNMENT_CEILING(size, alignment);
 	size_t asize = usize + alignment - QUANTUM;
@@ -570,9 +560,10 @@ base_alloc_impl(tsdn_t *tsdn, base_t *base, size_t size, size_t alignment,
 	edata_t *edata = NULL;
 	malloc_mutex_lock(tsdn, &base->mtx);
 	for (szind_t i = sz_size2index(asize); i < SC_NSIZES; i++) {
-		edata = edata_heap_remove_first(&base->avail[i]);
+		edata = edata_list_base_avail_last(&base->avail[i]);
 		if (edata != NULL) {
 			/* Use existing space. */
+			edata_list_base_avail_remove(&base->avail[i], edata);
 			break;
 		}
 	}
@@ -587,9 +578,6 @@ base_alloc_impl(tsdn_t *tsdn, base_t *base, size_t size, size_t alignment,
 	}
 
 	ret = base_extent_bump_alloc(tsdn, base, edata, usize, alignment);
-	if (esn != NULL) {
-		*esn = (size_t)edata_sn_get(edata);
-	}
 	if (ret_usize != NULL) {
 		*ret_usize = usize;
 	}
@@ -608,21 +596,20 @@ label_return:
  */
 void *
 base_alloc(tsdn_t *tsdn, base_t *base, size_t size, size_t alignment) {
-	return base_alloc_impl(tsdn, base, size, alignment, NULL, NULL);
+	return base_alloc_impl(tsdn, base, size, alignment, NULL);
 }
 
 edata_t *
 base_alloc_edata(tsdn_t *tsdn, base_t *base) {
-	size_t   esn, usize;
+	size_t   usize;
 	edata_t *edata = base_alloc_impl(
-	    tsdn, base, sizeof(edata_t), EDATA_ALIGNMENT, &esn, &usize);
+	    tsdn, base, sizeof(edata_t), EDATA_ALIGNMENT, &usize);
 	if (edata == NULL) {
 		return NULL;
 	}
 	if (config_stats) {
 		base->edata_allocated += usize;
 	}
-	edata_esn_set(edata, esn);
 	return edata;
 }
 
@@ -630,7 +617,7 @@ void *
 base_alloc_rtree(tsdn_t *tsdn, base_t *base, size_t size) {
 	size_t usize;
 	void  *rtree = base_alloc_impl(
-            tsdn, base, size, CACHELINE, NULL, &usize);
+	    tsdn, base, size, CACHELINE, &usize);
 	if (rtree == NULL) {
 		return NULL;
 	}
@@ -669,19 +656,21 @@ b0_alloc_tcache_stack(tsdn_t *tsdn, size_t stack_size) {
 	 * to improve reusability -- otherwise the freed stacks will be put back
 	 * into the previous size class.
 	 */
-	size_t esn, alignment, header_size;
+	size_t alignment, header_size;
 	b0_alloc_header_size(&header_size, &alignment);
 
 	size_t alloc_size = sz_s2u(stack_size + header_size);
 	void  *addr = base_alloc_impl(
-            tsdn, base, alloc_size, alignment, &esn, NULL);
+	    tsdn, base, alloc_size, alignment, NULL);
 	if (addr == NULL) {
-		edata_avail_insert(&base->edata_avail, edata);
+		malloc_mutex_lock(tsdn, &base->mtx);
+		edata_list_avail_append(&base->edata_avail, edata);
+		malloc_mutex_unlock(tsdn, &base->mtx);
 		return NULL;
 	}
 
 	/* Set is_reused: see comments in base_edata_is_reused. */
-	edata_binit(edata, addr, alloc_size, esn, true /* is_reused */);
+	edata_binit(edata, addr, alloc_size, true /* is_reused */);
 	*(edata_t **)addr = edata;
 
 	return (byte_t *)addr + header_size;
@@ -705,7 +694,7 @@ b0_dalloc_tcache_stack(tsdn_t *tsdn, void *tcache_stack) {
 
 	base_t *base = b0get();
 	malloc_mutex_lock(tsdn, &base->mtx);
-	base_edata_heap_insert(tsdn, base, edata);
+	base_extent_avail_insert(tsdn, base, edata);
 	malloc_mutex_unlock(tsdn, &base->mtx);
 }
 

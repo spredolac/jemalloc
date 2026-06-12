@@ -14,7 +14,7 @@ TEST_BEGIN(test_bin_slab_regind) {
 		const bin_info_t *bin_info = &bin_infos[binind];
 		edata_init(&slab, INVALID_ARENA_IND,
 		    mallocx(bin_info->slab_size, MALLOCX_LG_ALIGN(LG_PAGE)),
-		    bin_info->slab_size, true, binind, 0, extent_state_active,
+		    bin_info->slab_size, true, binind, extent_state_active,
 		    false, true, EXTENT_PAI_PAC, EXTENT_NOT_HEAD);
 		expect_ptr_not_null(
 		    edata_addr_get(&slab), "Unexpected malloc() failure");

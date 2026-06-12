@@ -6,11 +6,11 @@
 #define ESET_TEST_ADDR_BASE ((uintptr_t)0x30000000U)
 
 static void
-test_edata_init(edata_t *edata, uintptr_t addr, size_t size, uint64_t sn,
+test_edata_init(edata_t *edata, uintptr_t addr, size_t size,
     extent_state_t state, bool pinned) {
 	memset(edata, 0, sizeof(*edata));
 	edata_init(edata, ESET_TEST_ARENA_IND, (void *)addr, size,
-	    /* slab */ false, SC_NSIZES, sn, state, /* zeroed */ false,
+	    /* slab */ false, SC_NSIZES, state, /* zeroed */ false,
 	    /* committed */ true, EXTENT_PAI_PAC, EXTENT_NOT_HEAD);
 	edata_pinned_set(edata, pinned);
 }
@@ -29,13 +29,13 @@ TEST_BEGIN(test_eset_insert_remove_fit) {
 	edata_t b;
 	edata_t c;
 	edata_t pinned;
-	test_edata_init(&a, ESET_TEST_ADDR_BASE, 2 * PAGE, 20,
+	test_edata_init(&a, ESET_TEST_ADDR_BASE, 2 * PAGE,
 	    extent_state_dirty, false);
-	test_edata_init(&b, ESET_TEST_ADDR_BASE + HUGEPAGE, 2 * PAGE, 10,
+	test_edata_init(&b, ESET_TEST_ADDR_BASE + HUGEPAGE, 2 * PAGE,
 	    extent_state_dirty, false);
-	test_edata_init(&c, ESET_TEST_ADDR_BASE + 2 * HUGEPAGE, 4 * PAGE, 5,
+	test_edata_init(&c, ESET_TEST_ADDR_BASE + 2 * HUGEPAGE, 4 * PAGE,
 	    extent_state_dirty, false);
-	test_edata_init(&pinned, ESET_TEST_ADDR_BASE + 3 * HUGEPAGE, PAGE, 1,
+	test_edata_init(&pinned, ESET_TEST_ADDR_BASE + 3 * HUGEPAGE, PAGE,
 	    extent_state_dirty, true);
 
 	eset_insert(&eset, &a);
@@ -63,13 +63,12 @@ TEST_BEGIN(test_eset_insert_remove_fit) {
 
 	edata_t *fit = eset_fit(&eset, 2 * PAGE, PAGE,
 	    /* exact_only */ false, SC_PTR_BITS, /* prefer_small */ false);
-	expect_ptr_eq(&c, fit,
-	    "Default first-fit should choose the oldest fitting extent across "
-	    "larger bins");
+	expect_ptr_eq(&b, fit,
+	    "Default fit should choose the smallest fitting bin, then MRU");
 	fit = eset_fit(&eset, 2 * PAGE, PAGE,
 	    /* exact_only */ true, SC_PTR_BITS, /* prefer_small */ false);
 	expect_ptr_eq(&b, fit,
-	    "Exact fit should choose the lowest serial number in the size bin");
+	    "Exact fit should choose the MRU extent in the size bin");
 
 	eset_remove(&eset, &b);
 	expect_zu_eq(7, eset_npages_get(&eset),
@@ -77,7 +76,7 @@ TEST_BEGIN(test_eset_insert_remove_fit) {
 	fit = eset_fit(&eset, 2 * PAGE, PAGE, /* exact_only */ true,
 	    SC_PTR_BITS, /* prefer_small */ false);
 	expect_ptr_eq(&a, fit,
-	    "Removing the heap min should refresh the bin summary");
+	    "Removing the MRU extent should reveal the previous extent");
 
 	eset_remove(&eset, &pinned);
 	expect_zu_eq(6, eset_npages_get(&eset),
@@ -90,20 +89,20 @@ TEST_BEGIN(test_eset_insert_remove_fit) {
 	edata_t small_new;
 	edata_t large_old;
 	test_edata_init(&small_new, ESET_TEST_ADDR_BASE + 4 * HUGEPAGE,
-	    4 * PAGE, 100, extent_state_dirty, false);
+	    4 * PAGE, extent_state_dirty, false);
 	test_edata_init(&large_old, ESET_TEST_ADDR_BASE + 5 * HUGEPAGE,
-	    8 * PAGE, 1, extent_state_dirty, false);
+	    8 * PAGE, extent_state_dirty, false);
 	eset_insert(&prefer_eset, &small_new);
 	eset_insert(&prefer_eset, &large_old);
 
 	fit = eset_fit(&prefer_eset, 3 * PAGE, PAGE,
 	    /* exact_only */ false, SC_PTR_BITS, /* prefer_small */ false);
-	expect_ptr_eq(&large_old, fit,
-	    "Default first-fit should prefer the oldest suitable extent");
+	expect_ptr_eq(&small_new, fit,
+	    "Default fit should prefer the smallest suitable size class");
 	fit = eset_fit(&prefer_eset, 3 * PAGE, PAGE,
 	    /* exact_only */ false, SC_PTR_BITS, /* prefer_small */ true);
 	expect_ptr_eq(&small_new, fit,
-	    "prefer_small should stop at the smallest fitting bin");
+	    "prefer_small should match the default best-fit policy");
 }
 TEST_END
 
@@ -113,7 +112,7 @@ TEST_BEGIN(test_eset_alignment_and_large_class_fallback) {
 
 	edata_t aligned_candidate;
 	test_edata_init(&aligned_candidate,
-	    ESET_TEST_ADDR_BASE + 2 * PAGE, 4 * PAGE, 1, extent_state_dirty,
+	    ESET_TEST_ADDR_BASE + 2 * PAGE, 4 * PAGE, extent_state_dirty,
 	    false);
 	eset_insert(&eset, &aligned_candidate);
 
@@ -128,16 +127,23 @@ TEST_BEGIN(test_eset_alignment_and_large_class_fallback) {
 	edata_t too_large_old;
 	edata_t bounded_new;
 	test_edata_init(&too_large_old, ESET_TEST_ADDR_BASE + 6 * HUGEPAGE,
-	    64 * PAGE, 1, extent_state_dirty, false);
+	    64 * PAGE, extent_state_dirty, false);
 	test_edata_init(&bounded_new, ESET_TEST_ADDR_BASE + 7 * HUGEPAGE,
-	    4 * PAGE, 100, extent_state_dirty, false);
+	    4 * PAGE, extent_state_dirty, false);
 	eset_insert(&max_fit_eset, &too_large_old);
 	eset_insert(&max_fit_eset, &bounded_new);
 	fit = eset_fit(&max_fit_eset, 2 * PAGE, PAGE,
 	    /* exact_only */ false, /* lg_max_fit */ 1,
 	    /* prefer_small */ false);
 	expect_ptr_eq(&bounded_new, fit,
-	    "lg_max_fit should reject excessively large older extents");
+	    "lg_max_fit should reject excessively large extents");
+	eset_remove(&max_fit_eset, &bounded_new);
+	fit = eset_fit(&max_fit_eset, 2 * PAGE, PAGE,
+	    /* exact_only */ false, /* lg_max_fit */ 1,
+	    /* prefer_small */ false);
+	expect_ptr_null(fit,
+	    "lg_max_fit should reject an oversized extent even when no smaller "
+	    "extent is available");
 }
 TEST_END
 
@@ -150,9 +156,9 @@ TEST_BEGIN(test_eset_exact_fit_large_class_disabled) {
 	edata_t exact;
 	edata_t larger;
 	test_edata_init(&exact, ESET_TEST_ADDR_BASE + 8 * HUGEPAGE,
-	    request, 2, extent_state_dirty, false);
+	    request, extent_state_dirty, false);
 	test_edata_init(&larger, ESET_TEST_ADDR_BASE + 9 * HUGEPAGE,
-	    request + PAGE, 1, extent_state_dirty, false);
+	    request + PAGE, extent_state_dirty, false);
 	eset_insert(&exact_eset, &larger);
 	eset_insert(&exact_eset, &exact);
 

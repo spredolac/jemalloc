@@ -5,7 +5,6 @@
 #include "jemalloc/internal/fb.h"
 #include "jemalloc/internal/nstime.h"
 #include "jemalloc/internal/pages.h"
-#include "jemalloc/internal/ph.h"
 #include "jemalloc/internal/ql.h"
 #include "jemalloc/internal/typed_list.h"
 
@@ -27,7 +26,6 @@
  */
 #define PSSET_ENUMERATE_MAX_NUM 32
 typedef struct hpdata_s hpdata_t;
-ph_structs(hpdata_age_heap, hpdata_t, PSSET_ENUMERATE_MAX_NUM)
 struct hpdata_s {
 	/*
 	 * We likewise follow the edata convention of mangling names and forcing
@@ -40,8 +38,6 @@ struct hpdata_s {
 	 * since that conflicts with a macro defined in Windows headers.
 	 */
 	void *h_address;
-	/* Its age (measured in psset operations). */
-	uint64_t h_age;
 	/* Whether or not we think the hugepage is mapped that way by the OS. */
 	bool h_huge;
 
@@ -91,8 +87,8 @@ struct hpdata_s {
 	bool h_in_psset;
 
 	union {
-		/* When nonempty (and also nonfull), used by the psset bins. */
-		hpdata_age_heap_link_t age_link;
+		/* Dense psset allocation bins. */
+		ql_elm(hpdata_t) ql_link_alloc;
 		/*
 		 * When empty (or not corresponding to any hugepage), list
 		 * linkage.
@@ -111,6 +107,8 @@ struct hpdata_s {
 
 	/* Number of active pages. */
 	size_t h_nactive;
+	/* Number of active HPA allocation reservations. */
+	size_t h_nallocs;
 
 	/* A bitmap with bits set in the active pages. */
 	fb_group_t active_pages[FB_NGROUPS(HUGEPAGE_PAGES)];
@@ -133,10 +131,9 @@ struct hpdata_s {
 };
 
 TYPED_LIST(hpdata_empty_list, hpdata_t, ql_link_empty)
+TYPED_LIST(hpdata_alloc_list, hpdata_t, ql_link_alloc)
 TYPED_LIST(hpdata_purge_list, hpdata_t, ql_link_purge)
 TYPED_LIST(hpdata_hugify_list, hpdata_t, ql_link_hugify)
-
-ph_proto(, hpdata_age_heap, hpdata_t)
 
 static inline void *
 hpdata_addr_get(const hpdata_t *hpdata) {
@@ -147,16 +144,6 @@ static inline void
 hpdata_addr_set(hpdata_t *hpdata, void *addr) {
 	assert(HUGEPAGE_ADDR2BASE(addr) == addr);
 	hpdata->h_address = addr;
-}
-
-static inline uint64_t
-hpdata_age_get(const hpdata_t *hpdata) {
-	return hpdata->h_age;
-}
-
-static inline void
-hpdata_age_set(hpdata_t *hpdata, uint64_t age) {
-	hpdata->h_age = age;
 }
 
 static inline bool
@@ -295,6 +282,11 @@ hpdata_nactive_get(const hpdata_t *hpdata) {
 }
 
 static inline size_t
+hpdata_nallocs_get(const hpdata_t *hpdata) {
+	return hpdata->h_nallocs;
+}
+
+static inline size_t
 hpdata_ntouched_get(const hpdata_t *hpdata) {
 	return hpdata->h_ntouched;
 }
@@ -333,6 +325,7 @@ static inline void
 hpdata_assert_empty(const hpdata_t *hpdata) {
 	assert(fb_empty(hpdata->active_pages, HUGEPAGE_PAGES));
 	assert(hpdata->h_nactive == 0);
+	assert(hpdata->h_nallocs == 0);
 }
 
 /*
@@ -376,6 +369,13 @@ hpdata_consistent(const hpdata_t *hpdata) {
 		malloc_printf(
 		    "<jemalloc>: hpdata_ntouched=%zu < hpdata_nactive=%zu\n",
 		    hpdata->h_ntouched, hpdata->h_nactive);
+		res = false;
+	}
+
+	if (hpdata->h_nactive == 0 && hpdata->h_nallocs != 0) {
+		malloc_printf(
+		    "<jemalloc>: hpdata_nactive=0 but hpdata_nallocs=%zu\n",
+		    hpdata->h_nallocs);
 		res = false;
 	}
 
@@ -423,7 +423,7 @@ hpdata_full(const hpdata_t *hpdata) {
 	return hpdata->h_nactive == HUGEPAGE_PAGES;
 }
 
-void hpdata_init(hpdata_t *hpdata, void *addr, uint64_t age, bool is_huge);
+void hpdata_init(hpdata_t *hpdata, void *addr, bool is_huge);
 
 void  hpdata_unreserve(hpdata_t *hpdata, void *addr, size_t sz);
 

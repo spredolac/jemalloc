@@ -15,10 +15,10 @@
 
 typedef struct edata_cache_s edata_cache_t;
 struct edata_cache_s {
-	edata_avail_t  avail;
-	atomic_zu_t    count;
-	malloc_mutex_t mtx;
-	base_t        *base;
+	edata_list_avail_t avail;
+	atomic_zu_t        count;
+	malloc_mutex_t     mtx;
+	base_t            *base;
 };
 
 bool     edata_cache_init(edata_cache_t *edata_cache, base_t *base);

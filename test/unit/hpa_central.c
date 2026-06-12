@@ -145,11 +145,11 @@ static extent_hooks_t hpa_base_hooks = {
 
 static hpdata_t *
 hpa_central_extract_with_lock(hpa_central_t *central, malloc_mutex_t *mtx,
-    uint64_t age, bool hugify_eager, bool *oom) {
+    bool hugify_eager, bool *oom) {
 	tsdn_t *tsdn = tsdn_fetch();
 	malloc_mutex_lock(tsdn, mtx);
-	hpdata_t *ret = hpa_central_extract(tsdn, central, PAGE, age,
-	    hugify_eager, oom);
+	hpdata_t *ret = hpa_central_extract(
+	    tsdn, central, PAGE, hugify_eager, oom);
 	malloc_mutex_unlock(tsdn, mtx);
 	return ret;
 }
@@ -180,7 +180,7 @@ TEST_BEGIN(test_hpa_central_extract_eden) {
 	for (unsigned i = 0; i < 128; i++) {
 		bool oom = true;
 		hpdata_t *ps = hpa_central_extract_with_lock(&central,
-		    &shard_grow_mtx, 1000 + i, /* hugify_eager */ true, &oom);
+		    &shard_grow_mtx, /* hugify_eager */ true, &oom);
 		expect_false(oom, "Unexpected HPA central OOM");
 		expect_ptr_not_null(ps, "Unexpected HPA central extraction failure");
 		if (i == 0) {
@@ -199,8 +199,6 @@ TEST_BEGIN(test_hpa_central_extract_eden) {
 		}
 		expect_ptr_eq((void *)((byte_t *)eden + i * HUGEPAGE),
 		    hpdata_addr_get(ps), "Unexpected extracted pageslab addr");
-		expect_u64_eq(1000 + i, hpdata_age_get(ps),
-		    "Unexpected hpdata age");
 		expect_true(hpdata_huge_get(ps),
 		    "Eager extraction should mark hpdata huge");
 	}
@@ -235,7 +233,7 @@ TEST_BEGIN(test_hpa_central_failure_paths) {
 	hpa_test_map_fail = true;
 	bool oom = false;
 	hpdata_t *ps = hpa_central_extract_with_lock(&central,
-	    &shard_grow_mtx, 1, /* hugify_eager */ false, &oom);
+	    &shard_grow_mtx, /* hugify_eager */ false, &oom);
 	expect_ptr_null(ps, "Map failure should not return hpdata");
 	expect_true(oom, "Map failure should report OOM");
 	expect_u_eq(1, hpa_test_map_calls, "Expected one map attempt");
@@ -257,7 +255,7 @@ TEST_BEGIN(test_hpa_central_failure_paths) {
 	malloc_mutex_t shard_grow_mtx2;
 	hpa_test_shard_grow_mtx_init(&shard_grow_mtx2);
 	oom = false;
-	ps = hpa_central_extract_with_lock(&central, &shard_grow_mtx2, 2,
+	ps = hpa_central_extract_with_lock(&central, &shard_grow_mtx2,
 	    /* hugify_eager */ false, &oom);
 	expect_ptr_null(ps, "Metadata OOM should not return hpdata");
 	expect_true(oom, "Metadata allocation failure should report OOM");

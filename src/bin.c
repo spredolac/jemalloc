@@ -46,7 +46,10 @@ bin_init(bin_t *bin) {
 		return true;
 	}
 	bin->slabcur = NULL;
-	edata_heap_new(&bin->slabs_nonfull);
+	for (unsigned i = 0; i < BIN_SLABSET_NBINS; i++) {
+		edata_list_active_init(&bin->slabs_nonfull.dense[i]);
+	}
+	fb_init(bin->slabs_nonfull.dense_bitmap, BIN_SLABSET_NBINS);
 	edata_list_active_init(&bin->slabs_full);
 	if (config_stats) {
 		memset(&bin->stats, 0, sizeof(bin_stats_t));
@@ -134,34 +137,111 @@ bin_slab_reg_alloc_batch(
 	edata_nfree_sub(slab, cnt);
 }
 
-JET_EXTERN void
+static unsigned
+bin_slabset_dense_ind(edata_t *slab) {
+	szind_t           binind = edata_szind_get(slab);
+	const bin_info_t *bin_info = &bin_infos[binind];
+	unsigned          nfree = edata_nfree_get(slab);
+	assert(nfree > 0);
+	assert(nfree <= bin_info->nregs);
+
+	unsigned nactive = bin_info->nregs - nfree;
+	/* Use 0, 1, ..., 6, 7+; lower indices are picked first. */
+	if (nactive >= BIN_SLABSET_NBINS - 1) {
+		return 0;
+	}
+	return BIN_SLABSET_NBINS - 1 - nactive;
+}
+
+static void
+bin_slabset_dense_insert(bin_slabset_t *slabset, edata_t *slab) {
+	unsigned ind = bin_slabset_dense_ind(slab);
+	if (edata_list_active_empty(&slabset->dense[ind])) {
+		fb_set(slabset->dense_bitmap, BIN_SLABSET_NBINS, ind);
+	}
+	edata_list_active_prepend(&slabset->dense[ind], slab);
+}
+
+static void
+bin_slabset_dense_remove(bin_slabset_t *slabset, edata_t *slab) {
+	unsigned ind = bin_slabset_dense_ind(slab);
+	edata_list_active_remove(&slabset->dense[ind], slab);
+	if (edata_list_active_empty(&slabset->dense[ind])) {
+		fb_unset(slabset->dense_bitmap, BIN_SLABSET_NBINS, ind);
+	}
+}
+
+static edata_t *
+bin_slabset_dense_first(bin_slabset_t *slabset) {
+	size_t ind = fb_ffs(
+	    slabset->dense_bitmap, BIN_SLABSET_NBINS, (size_t)0);
+	if (ind == BIN_SLABSET_NBINS) {
+		return NULL;
+	}
+	return edata_list_active_first(&slabset->dense[ind]);
+}
+
+static edata_t *
+bin_slabset_dense_remove_first(bin_slabset_t *slabset) {
+	size_t ind = fb_ffs(
+	    slabset->dense_bitmap, BIN_SLABSET_NBINS, (size_t)0);
+	if (ind == BIN_SLABSET_NBINS) {
+		return NULL;
+	}
+	edata_t *slab = edata_list_active_first(&slabset->dense[ind]);
+	edata_list_active_remove(&slabset->dense[ind], slab);
+	if (edata_list_active_empty(&slabset->dense[ind])) {
+		fb_unset(slabset->dense_bitmap, BIN_SLABSET_NBINS, ind);
+	}
+	return slab;
+}
+
+void
 bin_slabs_nonfull_insert(bin_t *bin, edata_t *slab) {
 	assert(edata_nfree_get(slab) > 0);
-	edata_heap_insert(&bin->slabs_nonfull, slab);
+	bin_slabset_dense_insert(&bin->slabs_nonfull, slab);
 	if (config_stats) {
 		bin->stats.nonfull_slabs++;
 	}
 }
 
-JET_EXTERN void
+void
 bin_slabs_nonfull_remove(bin_t *bin, edata_t *slab) {
-	edata_heap_remove(&bin->slabs_nonfull, slab);
+	bin_slabset_dense_remove(&bin->slabs_nonfull, slab);
 	if (config_stats) {
 		bin->stats.nonfull_slabs--;
 	}
 }
 
-JET_EXTERN edata_t *
-bin_slabs_nonfull_tryget(bin_t *bin) {
-	edata_t *slab = edata_heap_remove_first(&bin->slabs_nonfull);
+edata_t *
+bin_slabs_nonfull_remove_first(bin_t *bin) {
+	edata_t *slab = bin_slabset_dense_remove_first(&bin->slabs_nonfull);
 	if (slab == NULL) {
 		return NULL;
 	}
 	if (config_stats) {
-		bin->stats.reslabs++;
 		bin->stats.nonfull_slabs--;
 	}
 	return slab;
+}
+
+edata_t *
+bin_slabs_nonfull_tryget(bin_t *bin) {
+	edata_t *slab = bin_slabs_nonfull_remove_first(bin);
+	if (slab != NULL && config_stats) {
+		bin->stats.reslabs++;
+	}
+	return slab;
+}
+
+edata_t *
+bin_slabs_nonfull_first(bin_t *bin) {
+	return bin_slabset_dense_first(&bin->slabs_nonfull);
+}
+
+bool
+bin_slabs_nonfull_empty(bin_t *bin) {
+	return fb_empty(bin->slabs_nonfull.dense_bitmap, BIN_SLABSET_NBINS);
 }
 
 JET_EXTERN void
@@ -212,29 +292,20 @@ JET_EXTERN void
 bin_lower_slab(tsdn_t *tsdn, bool is_auto, edata_t *slab, bin_t *bin) {
 	assert(edata_nfree_get(slab) > 0);
 
-	/*
-	 * Make sure that if bin->slabcur is non-NULL, it refers to the
-	 * oldest/lowest non-full slab.  It is okay to NULL slabcur out rather
-	 * than proactively keeping it pointing at the oldest/lowest non-full
-	 * slab.
-	 */
-	if (bin->slabcur != NULL && edata_snad_comp(bin->slabcur, slab) > 0) {
-		/* Switch slabcur. */
-		if (edata_nfree_get(bin->slabcur) > 0) {
-			bin_slabs_nonfull_insert(bin, bin->slabcur);
-		} else {
-			bin_slabs_full_insert(is_auto, bin, bin->slabcur);
-		}
-		bin->slabcur = slab;
-		if (config_stats) {
-			bin->stats.reslabs++;
-		}
-	} else {
+	if (bin->slabcur != NULL && edata_nfree_get(bin->slabcur) > 0) {
 		bin_slabs_nonfull_insert(bin, slab);
+		return;
+	}
+	if (bin->slabcur != NULL) {
+		bin_slabs_full_insert(is_auto, bin, bin->slabcur);
+	}
+	bin->slabcur = slab;
+	if (config_stats) {
+		bin->stats.reslabs++;
 	}
 }
 
-JET_EXTERN void
+void
 bin_dalloc_slab_prepare(tsdn_t *tsdn, edata_t *slab, bin_t *bin) {
 	malloc_mutex_assert_owner(tsdn, &bin->lock);
 
@@ -264,7 +335,7 @@ bin_refill_slabcur_with_fresh_slab(tsdn_t *tsdn, bin_t *bin,
 	malloc_mutex_assert_owner(tsdn, &bin->lock);
 	/* Only called after slabcur and nonfull both failed. */
 	assert(bin->slabcur == NULL);
-	assert(edata_heap_first(&bin->slabs_nonfull) == NULL);
+	assert(bin_slabs_nonfull_empty(bin));
 	assert(fresh_slab != NULL);
 
 	/* A new slab from arena_slab_alloc() */
@@ -337,8 +408,8 @@ bin_current_slab_addr(tsdn_t *tsdn, bin_t *bin) {
 	malloc_mutex_lock(tsdn, &bin->lock);
 	edata_t *slab = (bin->slabcur != NULL)
 	    ? bin->slabcur
-	    : edata_heap_first(&bin->slabs_nonfull);
-	assert(slab != NULL || edata_heap_empty(&bin->slabs_nonfull));
+	    : bin_slabs_nonfull_first(bin);
+	assert(slab != NULL || bin_slabs_nonfull_empty(bin));
 	void *ret = (slab != NULL) ? edata_addr_get(slab) : NULL;
 	assert(ret != NULL || slab == NULL);
 	malloc_mutex_unlock(tsdn, &bin->lock);
