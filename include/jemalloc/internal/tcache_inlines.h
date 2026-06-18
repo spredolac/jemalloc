@@ -179,6 +179,62 @@ tcache_alloc_large(tsd_t *tsd, arena_t *arena, tcache_t *tcache, size_t size,
 	return ret;
 }
 
+JEMALLOC_ALWAYS_INLINE cache_bin_sz_t
+tcache_bin_target_initial(cache_bin_sz_t ncached_max) {
+	assert(ncached_max > 0);
+	cache_bin_sz_t target = ncached_max >> 1;
+	if (target == 0) {
+		target = 1;
+	}
+	return target;
+}
+
+JEMALLOC_ALWAYS_INLINE cache_bin_sz_t
+tcache_slow_bin_target_get(tcache_slow_t *tcache_slow, szind_t binind) {
+	assert(binind < SC_NBINS);
+	return tcache_slow->bin_ncached_target[binind];
+}
+
+JEMALLOC_ALWAYS_INLINE void
+tcache_slow_bin_target_set(tcache_slow_t *tcache_slow, szind_t binind,
+    cache_bin_sz_t target) {
+	assert(binind < SC_NBINS);
+	tcache_slow->bin_ncached_target[binind] = target;
+}
+
+JEMALLOC_ALWAYS_INLINE cache_bin_sz_t
+tcache_bin_target_get(tcache_t *tcache, szind_t binind) {
+	return tcache_slow_bin_target_get(tcache->tcache_slow, binind);
+}
+
+JEMALLOC_ALWAYS_INLINE void
+tcache_bin_target_set(tcache_t *tcache, szind_t binind,
+    cache_bin_sz_t target) {
+	tcache_slow_bin_target_set(tcache->tcache_slow, binind, target);
+}
+
+JEMALLOC_ALWAYS_INLINE cache_bin_sz_t
+tcache_gc_target_min(cache_bin_sz_t ncached_max) {
+	assert(ncached_max > 0);
+	return (ncached_max < 2) ? ncached_max : 2;
+}
+
+JEMALLOC_ALWAYS_INLINE cache_bin_sz_t
+tcache_bin_target_update(tcache_t *tcache, szind_t binind,
+    cache_bin_sz_t max) {
+	cache_bin_sz_t target = tcache_bin_target_get(tcache, binind);
+	if (unlikely(target == 0)) {
+		target = tcache_bin_target_initial(max);
+	}
+	target = target >> 1;
+	cache_bin_sz_t target_min = tcache_gc_target_min(max);
+	if (target < target_min) {
+		target = target_min;
+	}
+	tcache_bin_target_set(tcache, binind, target);
+	return target;
+}
+
 JEMALLOC_ALWAYS_INLINE void
 tcache_dalloc_small(
     tsd_t *tsd, tcache_t *tcache, void *ptr, szind_t binind, bool slow_path) {
@@ -208,6 +264,13 @@ tcache_dalloc_small(
 		}
 		cache_bin_sz_t max = cache_bin_ncached_max_get(bin);
 		unsigned       remain = max >> opt_lg_tcache_flush_small_div;
+		if (opt_experimental_tcache_gc) {
+			cache_bin_sz_t target =
+			    tcache_bin_target_update(tcache, binind, max);
+			if (target < remain) {
+				remain = target;
+			}
+		}
 		tcache_bin_flush_small(tsd, tcache, bin, binind, remain);
 		bool ret = cache_bin_dalloc_easy(bin, ptr);
 		assert(ret);

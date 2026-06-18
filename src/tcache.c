@@ -214,6 +214,67 @@ tcache_gc_item_delay_compute(szind_t szind) {
 	return (uint8_t)item_delay;
 }
 
+JET_EXTERN void
+tcache_gc_target_init(
+    tcache_slow_t *tcache_slow, szind_t szind, cache_bin_sz_t ncached_max) {
+	assert(szind < SC_NBINS);
+	tcache_slow_bin_target_set(tcache_slow, szind,
+	    tcache_bin_target_initial(ncached_max));
+}
+
+JET_EXTERN cache_bin_sz_t
+tcache_gc_target_raise(tcache_slow_t *tcache_slow, szind_t szind,
+    cache_bin_sz_t target_min, cache_bin_sz_t ncached_max) {
+	assert(target_min <= ncached_max);
+	if (target_min > (cache_bin_sz_t)(ncached_max >> 1)) {
+		target_min = ncached_max;
+	} else {
+		target_min = (cache_bin_sz_t)(target_min << 1);
+	}
+	cache_bin_sz_t target =
+	    tcache_slow_bin_target_get(tcache_slow, szind);
+	if (unlikely(target == 0)) {
+		target = tcache_bin_target_initial(ncached_max);
+		tcache_slow_bin_target_set(tcache_slow, szind, target);
+	}
+	assert(target > 0 && target <= ncached_max);
+	if (target < target_min) {
+		target = target_min;
+		tcache_slow_bin_target_set(tcache_slow, szind, target);
+	}
+	return target;
+}
+
+JET_EXTERN cache_bin_sz_t
+tcache_gc_target_update_for_gc(tcache_slow_t *tcache_slow,
+    szind_t szind, cache_bin_sz_t ncached, cache_bin_sz_t low_water,
+    cache_bin_sz_t ncached_max) {
+	assert(szind < SC_NBINS);
+	assert(low_water <= ncached);
+	assert(ncached <= ncached_max);
+
+	cache_bin_sz_t used_since_gc = (cache_bin_sz_t)(ncached - low_water);
+	cache_bin_sz_t target;
+	if (used_since_gc == 0) {
+		target = tcache_gc_target_min(ncached_max);
+	} else {
+		cache_bin_sz_t headroom = (cache_bin_sz_t)(used_since_gc >> 2);
+		if (headroom == 0) {
+			headroom = 1;
+		}
+		if (used_since_gc > (cache_bin_sz_t)(ncached_max - headroom)) {
+			target = ncached_max;
+		} else {
+			target = (cache_bin_sz_t)(used_since_gc + headroom);
+		}
+	}
+	if (target > ncached_max) {
+		target = ncached_max;
+	}
+	tcache_slow_bin_target_set(tcache_slow, szind, target);
+	return target;
+}
+
 static inline bool
 tcache_gc_is_addr_remote(void *addr, uintptr_t min, uintptr_t max) {
 	assert(addr != NULL);
@@ -363,19 +424,20 @@ tcache_gc_small(
 	assert(!tcache_bin_disabled(szind, cache_bin, tcache->tcache_slow));
 	cache_bin_sz_t ncached = cache_bin_ncached_get_local(cache_bin);
 	cache_bin_sz_t low_water = cache_bin_low_water_get(cache_bin);
+
 	if (low_water > 0) {
 		/*
-		 * There is unused items within the GC period => reduce fill count.
-		 * limit field != 0 is borrowed to indicate that the fill count
-		 * should be reduced.
+		 * There is unused items within the GC period => reduce fill
+		 * count.  limit field != 0 is borrowed to indicate that the
+		 * fill count should be reduced.
 		 */
 		tcache_nfill_small_gc_update(tcache_slow, szind,
 		    /* limit */ cache_bin_ncached_max_get(cache_bin));
 	} else if (tcache_slow->bin_refilled[szind]) {
 		/*
-		 * There has been refills within the GC period => increase fill count.
-		 * limit field set to 0 is borrowed to indicate that the fill count
-		 * should be increased.
+		 * There has been refills within the GC period => increase fill
+		 * count.  limit field set to 0 is borrowed to indicate that the
+		 * fill count should be increased.
 		 */
 		tcache_nfill_small_gc_update(tcache_slow, szind, /* limit */ 0);
 		tcache_slow->bin_refilled[szind] = false;
@@ -401,6 +463,19 @@ tcache_gc_small(
 		tcache_slow->bin_flush_delay_items[szind] =
 		    tcache_gc_item_delay_compute(szind);
 		goto label_flush;
+	}
+
+	if (low_water > 0) {
+		cache_bin_sz_t target = tcache_gc_target_update_for_gc(
+		    tcache_slow, szind, ncached, low_water,
+		    cache_bin_ncached_max_get(cache_bin));
+		if (ncached > target) {
+			nflush = (cache_bin_sz_t)(ncached - target);
+		} else {
+			nflush = 0;
+		}
+	} else {
+		nflush = 0;
 	}
 
 	/* Directly goto the flush path when the entire bin needs to be flushed. */
@@ -453,7 +528,6 @@ tcache_gc_small(
 
 label_flush:
 	if (nflush == 0) {
-		assert(low_water == 0);
 		return false;
 	}
 	assert(nflush <= ncached);
@@ -583,14 +657,13 @@ tcache_alloc_small_hard(tsdn_t *tsdn, arena_t *arena, tcache_t *tcache,
 	assert(tcache_slow->arena != NULL);
 	assert(!tcache_bin_disabled(binind, cache_bin, tcache_slow));
 	assert(cache_bin_ncached_get_local(cache_bin) == 0);
-	cache_bin_sz_t nfill = cache_bin_ncached_max_get(cache_bin)
+	cache_bin_sz_t ncached_max = cache_bin_ncached_max_get(cache_bin);
+	cache_bin_sz_t nfill = ncached_max
 	    >> tcache_nfill_small_lg_div_get(tcache_slow, binind);
 	if (nfill == 0) {
 		nfill = 1;
 	}
-	cache_bin_sz_t nfill_min = opt_experimental_tcache_gc
-	    ? ((nfill >> 1) + 1)
-	    : nfill;
+	cache_bin_sz_t nfill_min = nfill;
 	cache_bin_sz_t nfill_max = nfill;
 	CACHE_BIN_PTR_ARRAY_DECLARE(ptrs, nfill_max);
 	cache_bin_init_ptr_array_for_fill(cache_bin, &ptrs, nfill_max);
@@ -602,6 +675,10 @@ tcache_alloc_small_hard(tsdn_t *tsdn, arena_t *arena, tcache_t *tcache,
 	assert(filled >= nfill_min && filled <= nfill_max);
 	assert(cache_bin_ncached_get_local(cache_bin) == filled);
 
+	if (opt_experimental_tcache_gc) {
+		tcache_gc_target_raise(
+		    tcache_slow, binind, filled, ncached_max);
+	}
 	tcache_slow->bin_refilled[binind] = true;
 	tcache_nfill_small_burst_prepare(tcache_slow, binind);
 	ret = cache_bin_alloc(cache_bin, tcache_success);
@@ -815,6 +892,12 @@ tcache_init(tsd_t *tsd, tcache_slow_t *tcache_slow, tcache_t *tcache, void *mem,
 		if (i < SC_NBINS) {
 			tcache_bin_fill_ctl_init(tcache_slow, i);
 			tcache_slow->bin_refilled[i] = false;
+			if (tcache_bin_info[i].ncached_max > 0) {
+				tcache_gc_target_init(tcache_slow, i,
+				    tcache_bin_info[i].ncached_max);
+			} else {
+				tcache_slow->bin_ncached_target[i] = 0;
+			}
 			tcache_slow->bin_flush_delay_items[i] =
 			    tcache_gc_item_delay_compute(i);
 		}

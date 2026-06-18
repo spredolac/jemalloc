@@ -84,6 +84,11 @@ struct tcache_slow_s {
 	/* For small bins, whether has been refilled since last GC. */
 	bool bin_refilled[SC_NBINS];
 	/*
+	 * For small bins, the soft cap on how many items to fetch and retain.
+	 * The physical cache_bin capacity remains unchanged.
+	 */
+	cache_bin_sz_t bin_ncached_target[SC_NBINS];
+	/*
 	 * For small bins, the number of items we can pretend to flush before
 	 * actually flushing.
 	 */

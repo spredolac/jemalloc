@@ -14,6 +14,14 @@ extern void tcache_nfill_small_burst_reset(
 extern void tcache_nfill_small_gc_update(
     tcache_slow_t *tcache_slow, szind_t szind, cache_bin_sz_t limit);
 extern uint8_t tcache_gc_item_delay_compute(szind_t szind);
+extern void tcache_gc_target_init(
+    tcache_slow_t *tcache_slow, szind_t szind, cache_bin_sz_t ncached_max);
+extern cache_bin_sz_t tcache_gc_target_raise(
+    tcache_slow_t *tcache_slow, szind_t szind, cache_bin_sz_t target_min,
+    cache_bin_sz_t ncached_max);
+extern cache_bin_sz_t tcache_gc_target_update_for_gc(
+    tcache_slow_t *tcache_slow, szind_t szind, cache_bin_sz_t ncached,
+    cache_bin_sz_t low_water, cache_bin_sz_t ncached_max);
 
 static void *
 test_cache_bin_init(cache_bin_t *bin, cache_bin_info_t *info,
@@ -159,8 +167,49 @@ TEST_BEGIN(test_tcache_gc_fill_control_and_delay) {
 }
 TEST_END
 
+TEST_BEGIN(test_tcache_gc_target) {
+	tcache_slow_t tcache_slow;
+	memset(&tcache_slow, 0, sizeof(tcache_slow));
+
+	szind_t szind = 0;
+	cache_bin_sz_t ncached_max = 64;
+
+	tcache_gc_target_init(
+	    &tcache_slow, szind, ncached_max);
+	expect_zu_eq(32, tcache_slow.bin_ncached_target[szind],
+	    "Unexpected initial GC target");
+
+	expect_zu_eq(32, tcache_gc_target_raise(
+	    &tcache_slow, szind, /* target_min */ 16, ncached_max),
+	    "Refill should not lower an existing target");
+	expect_zu_eq(ncached_max, tcache_gc_target_raise(
+	    &tcache_slow, szind, /* target_min */ 48, ncached_max),
+	    "Large refill should raise target to physical capacity");
+
+	expect_zu_eq(10, tcache_gc_target_update_for_gc(
+	    &tcache_slow, szind, /* ncached */ 20, /* low_water */ 12,
+	    ncached_max),
+	    "GC should shrink target to observed use plus headroom");
+	expect_zu_eq(2, tcache_gc_target_update_for_gc(
+	    &tcache_slow, szind, /* ncached */ 20, /* low_water */ 20,
+	    ncached_max),
+	    "Completely idle bins should converge to minimum target");
+
+	tcache_slow.bin_ncached_target[szind] = 40;
+	expect_zu_eq(40, tcache_gc_target_raise(
+	    &tcache_slow, szind, /* target_min */ 16, ncached_max),
+	    "Small refill should not lower an existing target");
+
+	tcache_gc_target_init(
+	    &tcache_slow, szind, /* ncached_max */ 1);
+	expect_zu_eq(1, tcache_slow.bin_ncached_target[szind],
+	    "Tiny bins should still get a valid target");
+}
+TEST_END
+
 int
 main(void) {
 	return test_no_reentrancy(test_tcache_gc_small_remote_count_and_shuffle,
-	    test_tcache_gc_fill_control_and_delay);
+	    test_tcache_gc_fill_control_and_delay,
+	    test_tcache_gc_target);
 }
