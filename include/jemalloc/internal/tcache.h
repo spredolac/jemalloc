@@ -79,10 +79,15 @@ struct tcache_slow_s {
 	szind_t next_gc_bin;
 	szind_t next_gc_bin_small;
 	szind_t next_gc_bin_large;
-	/* For small bins, help determine how many items to fill at a time. */
-	cache_bin_fill_ctl_t bin_fill_ctl_do_not_access_directly[SC_NBINS];
-	/* For small bins, whether has been refilled since last GC. */
-	bool bin_refilled[SC_NBINS];
+	/*
+	 * For small bins, the two adaptive knobs.  Both are linear counts in
+	 * [tcache_bin_nslots_min, tcache_bin_nslots_max], raised on activity and reduced
+	 * when the bin sits idle.  bin_nfill is how many items to fetch per arena
+	 * refill; bin_nretain is the soft cap on how many to retain (the
+	 * physical cache_bin capacity is unchanged).
+	 */
+	cache_bin_sz_t bin_nfill[SC_NBINS];
+	cache_bin_sz_t bin_nretain[SC_NBINS];
 	/*
 	 * For small bins, the number of items we can pretend to flush before
 	 * actually flushing.

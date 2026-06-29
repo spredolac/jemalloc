@@ -179,6 +179,50 @@ tcache_alloc_large(tsd_t *tsd, arena_t *arena, tcache_t *tcache, size_t size,
 	return ret;
 }
 
+JEMALLOC_ALWAYS_INLINE cache_bin_sz_t
+tcache_bin_nslots_max(cache_bin_sz_t ncached_max) {
+	assert(ncached_max > 0);
+	cache_bin_sz_t nslots = ncached_max >> 1;
+	if (nslots == 0) {
+		nslots = 1;
+	}
+	return nslots;
+}
+
+JEMALLOC_ALWAYS_INLINE cache_bin_sz_t
+tcache_nretain_small_get(tcache_slow_t *tcache_slow, szind_t binind) {
+	assert(binind < SC_NBINS);
+	return tcache_slow->bin_nretain[binind];
+}
+
+JEMALLOC_ALWAYS_INLINE void
+tcache_nretain_small_set(tcache_slow_t *tcache_slow, szind_t binind,
+    cache_bin_sz_t nretain) {
+	assert(binind < SC_NBINS);
+	tcache_slow->bin_nretain[binind] = nretain;
+}
+
+JEMALLOC_ALWAYS_INLINE cache_bin_sz_t
+tcache_bin_nslots_min(cache_bin_sz_t ncached_max) {
+	assert(ncached_max > 0);
+	return (ncached_max < 2) ? ncached_max : 2;
+}
+
+JEMALLOC_ALWAYS_INLINE cache_bin_sz_t
+tcache_nretain_small_reduce(tcache_slow_t *tcache_slow, szind_t binind,
+    cache_bin_sz_t ncached_max) {
+	cache_bin_sz_t nretain = tcache_nretain_small_get(tcache_slow, binind);
+	/* Only enabled bins reach here; tcache_init seeds bin_nretain > 0. */
+	assert(nretain > 0);
+	nretain >>= 1;
+	cache_bin_sz_t nretain_min = tcache_bin_nslots_min(ncached_max);
+	if (nretain < nretain_min) {
+		nretain = nretain_min;
+	}
+	tcache_nretain_small_set(tcache_slow, binind, nretain);
+	return nretain;
+}
+
 JEMALLOC_ALWAYS_INLINE void
 tcache_dalloc_small(
     tsd_t *tsd, tcache_t *tcache, void *ptr, szind_t binind, bool slow_path) {
@@ -208,6 +252,13 @@ tcache_dalloc_small(
 		}
 		cache_bin_sz_t max = cache_bin_ncached_max_get(bin);
 		unsigned       remain = max >> opt_lg_tcache_flush_small_div;
+		if (opt_experimental_tcache_gc) {
+			cache_bin_sz_t nretain = tcache_nretain_small_reduce(
+			    tcache->tcache_slow, binind, max);
+			if (nretain < remain) {
+				remain = nretain;
+			}
+		}
 		tcache_bin_flush_small(tsd, tcache, bin, binind, remain);
 		bool ret = cache_bin_dalloc_easy(bin, ptr);
 		assert(ret);
