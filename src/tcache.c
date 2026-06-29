@@ -27,20 +27,16 @@ bool opt_tcache = true;
 /* global_do_not_change_tcache_maxclass is set to 32KB by default. */
 size_t opt_tcache_max = ((size_t)1) << 15;
 
-/* Reasonable defaults for min and max values. */
-unsigned opt_tcache_nslots_small_min = 20;
-unsigned opt_tcache_nslots_small_max = 200;
-unsigned opt_tcache_nslots_large = 20;
-
 /*
- * We attempt to make the number of slots in a tcache bin for a given size class
- * equal to the number of objects in a slab times some multiplier.  By default,
- * the multiplier is 2 (i.e. we set the maximum number of objects in the tcache
- * to twice the number of objects in a slab).
- * This is bounded by some other constraints as well, like the fact that it
- * must be even, must be less than opt_tcache_nslots_small_max, etc..
+ * Default tcache bin capacities, used for any size class not overridden via
+ * tcache_ncached_max (thread.tcache.ncached_max / opt.tcache_ncached_max).
+ * Small size classes target twice the number of regions in a slab, clamped to
+ * [TCACHE_NSLOTS_SMALL_MIN, TCACHE_NSLOTS_SMALL_MAX]; large size classes use a
+ * fixed default.  See tcache_ncached_max_compute().
  */
-ssize_t opt_lg_tcache_nslots_mul = 1;
+#define TCACHE_NSLOTS_SMALL_MIN 20
+#define TCACHE_NSLOTS_SMALL_MAX 200
+#define TCACHE_NSLOTS_LARGE 20
 
 /*
  * Number of allocation bytes between tcache incremental GCs.  Again, this
@@ -813,57 +809,24 @@ tcache_init(tsd_t *tsd, tcache_slow_t *tcache_slow, tcache_t *tcache, void *mem,
 static inline unsigned
 tcache_ncached_max_compute(szind_t szind) {
 	if (szind >= SC_NBINS) {
-		return opt_tcache_nslots_large;
+		return TCACHE_NSLOTS_LARGE;
 	}
 	unsigned slab_nregs = bin_infos[szind].nregs;
 
-	/* We may modify these values; start with the opt versions. */
-	unsigned nslots_small_min = opt_tcache_nslots_small_min;
-	unsigned nslots_small_max = opt_tcache_nslots_small_max;
-
 	/*
-	 * Clamp values to meet our constraints -- even, nonzero, min < max, and
-	 * suitable for a cache bin size.
+	 * Target twice the number of regions in a slab.  The doubling keeps the
+	 * result even, which we rely on when ncached is halved (e.g. when
+	 * flushing).  The fixed bounds stay well within CACHE_BIN_NCACHED_MAX,
+	 * so no cache-bin clamp is needed here (asserted in
+	 * tcache_bin_info_compute()).
 	 */
-	if (opt_tcache_nslots_small_max > CACHE_BIN_NCACHED_MAX) {
-		nslots_small_max = CACHE_BIN_NCACHED_MAX;
-	}
-	if (nslots_small_min % 2 != 0) {
-		nslots_small_min++;
-	}
-	if (nslots_small_max % 2 != 0) {
-		nslots_small_max--;
-	}
-	if (nslots_small_min < 2) {
-		nslots_small_min = 2;
-	}
-	if (nslots_small_max < 2) {
-		nslots_small_max = 2;
-	}
-	if (nslots_small_min > nslots_small_max) {
-		nslots_small_min = nslots_small_max;
-	}
-
-	unsigned candidate;
-	if (opt_lg_tcache_nslots_mul < 0) {
-		candidate = slab_nregs >> (-opt_lg_tcache_nslots_mul);
-	} else {
-		candidate = slab_nregs << opt_lg_tcache_nslots_mul;
-	}
-	if (candidate % 2 != 0) {
-		/*
-		 * We need the candidate size to be even -- we assume that we
-		 * can divide by two and get a positive number (e.g. when
-		 * flushing).
-		 */
-		++candidate;
-	}
-	if (candidate <= nslots_small_min) {
-		return nslots_small_min;
-	} else if (candidate <= nslots_small_max) {
+	unsigned candidate = slab_nregs << 1;
+	if (candidate <= TCACHE_NSLOTS_SMALL_MIN) {
+		return TCACHE_NSLOTS_SMALL_MIN;
+	} else if (candidate <= TCACHE_NSLOTS_SMALL_MAX) {
 		return candidate;
 	} else {
-		return nslots_small_max;
+		return TCACHE_NSLOTS_SMALL_MAX;
 	}
 }
 

@@ -117,10 +117,6 @@ struct tcaches_s {
 
 extern bool     opt_tcache;
 extern size_t   opt_tcache_max;
-extern ssize_t  opt_lg_tcache_nslots_mul;
-extern unsigned opt_tcache_nslots_small_min;
-extern unsigned opt_tcache_nslots_small_max;
-extern unsigned opt_tcache_nslots_large;
 extern ssize_t  opt_lg_tcache_shift;
 extern size_t   opt_tcache_gc_incr_bytes;
 extern unsigned opt_lg_tcache_flush_small_div;

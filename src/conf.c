@@ -751,22 +751,6 @@ malloc_conf_init_helper(sc_data_t *sc_data, unsigned bin_shard_sizes[SC_NBINS],
 				}
 				CONF_CONTINUE;
 			}
-			/*
-			 * Anyone trying to set a value outside -16 to 16 is
-			 * deeply confused.
-			 */
-			CONF_HANDLE_SSIZE_T(opt_lg_tcache_nslots_mul,
-			    "lg_tcache_nslots_mul", -16, 16)
-			/* Ditto with values past 2048. */
-			CONF_HANDLE_UNSIGNED(opt_tcache_nslots_small_min,
-			    "tcache_nslots_small_min", 1, 2048, CONF_CHECK_MIN,
-			    CONF_CHECK_MAX, /* clip */ true)
-			CONF_HANDLE_UNSIGNED(opt_tcache_nslots_small_max,
-			    "tcache_nslots_small_max", 1, 2048, CONF_CHECK_MIN,
-			    CONF_CHECK_MAX, /* clip */ true)
-			CONF_HANDLE_UNSIGNED(opt_tcache_nslots_large,
-			    "tcache_nslots_large", 1, 2048, CONF_CHECK_MIN,
-			    CONF_CHECK_MAX, /* clip */ true)
 			CONF_HANDLE_SIZE_T(opt_tcache_gc_incr_bytes,
 			    "tcache_gc_incr_bytes", 1024, SIZE_T_MAX,
 			    CONF_CHECK_MIN, CONF_DONT_CHECK_MAX,
