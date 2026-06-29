@@ -75,8 +75,7 @@ struct tcache_slow_s {
 	unsigned tcache_nbins;
 	/* Last time GC has been performed.  */
 	nstime_t last_gc_time;
-	/* Next bin to GC. */
-	szind_t next_gc_bin;
+	/* Next small/large bin to GC. */
 	szind_t next_gc_bin_small;
 	szind_t next_gc_bin_large;
 	/*
@@ -88,11 +87,6 @@ struct tcache_slow_s {
 	 */
 	cache_bin_sz_t bin_nfill[SC_NBINS];
 	cache_bin_sz_t bin_nretain[SC_NBINS];
-	/*
-	 * For small bins, the number of items we can pretend to flush before
-	 * actually flushing.
-	 */
-	uint8_t bin_flush_delay_items[SC_NBINS];
 	/*
 	 * The start of the allocation containing the dynamic allocation for
 	 * either the cache bins alone, or the cache bin memory as well as this
@@ -129,7 +123,6 @@ extern unsigned opt_tcache_nslots_small_max;
 extern unsigned opt_tcache_nslots_large;
 extern ssize_t  opt_lg_tcache_shift;
 extern size_t   opt_tcache_gc_incr_bytes;
-extern size_t   opt_tcache_gc_delay_bytes;
 extern unsigned opt_lg_tcache_flush_small_div;
 extern unsigned opt_lg_tcache_flush_large_div;
 

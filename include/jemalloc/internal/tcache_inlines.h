@@ -252,12 +252,10 @@ tcache_dalloc_small(
 		}
 		cache_bin_sz_t max = cache_bin_ncached_max_get(bin);
 		unsigned       remain = max >> opt_lg_tcache_flush_small_div;
-		if (opt_experimental_tcache_gc) {
-			cache_bin_sz_t nretain = tcache_nretain_small_reduce(
-			    tcache->tcache_slow, binind, max);
-			if (nretain < remain) {
-				remain = nretain;
-			}
+		cache_bin_sz_t nretain =
+		    tcache_nretain_small_reduce(tcache->tcache_slow, binind, max);
+		if (nretain < remain) {
+			remain = nretain;
 		}
 		tcache_bin_flush_small(tsd, tcache, bin, binind, remain);
 		bool ret = cache_bin_dalloc_easy(bin, ptr);

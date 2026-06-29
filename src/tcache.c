@@ -49,20 +49,6 @@ ssize_t opt_lg_tcache_nslots_mul = 1;
 size_t opt_tcache_gc_incr_bytes = 65536;
 
 /*
- * With default settings, we may end up flushing small bins frequently with
- * small flush amounts.  To limit this tendency, we can set a number of bytes to
- * "delay" by.  If we try to flush N M-byte items, we decrease that size-class's
- * delay by N * M.  So, if delay is 1024 and we're looking at the 64-byte size
- * class, we won't do any flushing until we've been asked to flush 1024/64 == 16
- * items.  This can happen in any configuration (i.e. being asked to flush 16
- * items once, or 4 items 4 times).
- *
- * Practically, this is stored as a count of items in a uint8_t, so the
- * effective maximum value for a size class is 255 * sz.
- */
-size_t opt_tcache_gc_delay_bytes = 0;
-
-/*
  * When a cache bin is flushed because it's full, how much of it do we flush?
  * By default, we flush half the maximum number of items.
  */
@@ -169,19 +155,6 @@ tcache_nfill_small_reduce(tcache_slow_t *tcache_slow, szind_t szind,
 		nfill = nfill_min;
 	}
 	tcache_slow->bin_nfill[szind] = nfill;
-}
-
-JET_EXTERN uint8_t
-tcache_gc_item_delay_compute(szind_t szind) {
-	assert(szind < SC_NBINS);
-	size_t sz = sz_index2size(szind);
-	size_t item_delay = opt_tcache_gc_delay_bytes / sz;
-	size_t delay_max = ZU(1)
-	    << (sizeof(((tcache_slow_t *)NULL)->bin_flush_delay_items[0]) * 8);
-	if (item_delay >= delay_max) {
-		item_delay = delay_max - 1;
-	}
-	return (uint8_t)item_delay;
 }
 
 JET_EXTERN void
@@ -381,8 +354,8 @@ static bool
 tcache_gc_small(
     tsd_t *tsd, tcache_slow_t *tcache_slow, tcache_t *tcache, szind_t szind) {
 	/*
-	 * Aim to flush 3/4 of items below low-water, with remote pointers being
-	 * prioritized for flushing.
+	 * Flush whatever sits above the recomputed retention target, with remote
+	 * pointers prioritized for flushing.
 	 */
 	assert(szind < SC_NBINS);
 
@@ -391,52 +364,17 @@ tcache_gc_small(
 	cache_bin_sz_t ncached = cache_bin_ncached_get_local(cache_bin);
 	cache_bin_sz_t low_water = cache_bin_low_water_get(cache_bin);
 
+	cache_bin_sz_t nflush = 0;
 	if (low_water > 0) {
+		cache_bin_sz_t ncached_max = cache_bin_ncached_max_get(cache_bin);
 		/* The bin sat idle this GC period => shrink the fill count. */
-		tcache_nfill_small_reduce(tcache_slow, szind,
-		    cache_bin_ncached_max_get(cache_bin));
-	} else if (!opt_experimental_tcache_gc) {
-		/*
-		 * Legacy (non-experimental) path adapts the fill count only at
-		 * GC.  The experimental path instead grows it per-refill in
-		 * tcache_alloc_small_hard for faster burst response.
-		 */
-		tcache_nfill_small_raise(tcache_slow, szind,
-		    cache_bin_ncached_max_get(cache_bin));
-	}
-
-	cache_bin_sz_t nflush = low_water - (low_water >> 2);
-	/*
-	 * When the new tcache gc is not enabled, keep the flush delay logic,
-	 * and directly flush the bottom nflush items if needed.
-	 */
-	if (!opt_experimental_tcache_gc) {
-		if (nflush < tcache_slow->bin_flush_delay_items[szind]) {
-			/* Workaround for a conversion warning. */
-			uint8_t nflush_uint8 = (uint8_t)nflush;
-			assert(sizeof(tcache_slow->bin_flush_delay_items[0])
-			    == sizeof(nflush_uint8));
-			tcache_slow->bin_flush_delay_items[szind] -=
-			    nflush_uint8;
-			return false;
-		}
-
-		tcache_slow->bin_flush_delay_items[szind] =
-		    tcache_gc_item_delay_compute(szind);
-		goto label_flush;
-	}
-
-	if (low_water > 0) {
+		tcache_nfill_small_reduce(tcache_slow, szind, ncached_max);
+		/* Flush whatever sits above the recomputed retention target. */
 		cache_bin_sz_t nretain = tcache_nretain_small_recompute(
-		    tcache_slow, szind, ncached, low_water,
-		    cache_bin_ncached_max_get(cache_bin));
+		    tcache_slow, szind, ncached, low_water, ncached_max);
 		if (ncached > nretain) {
 			nflush = (cache_bin_sz_t)(ncached - nretain);
-		} else {
-			nflush = 0;
 		}
-	} else {
-		nflush = 0;
 	}
 
 	/* Directly goto the flush path when the entire bin needs to be flushed. */
@@ -545,17 +483,6 @@ tcache_gc_event(tsd_t *tsd) {
 	tcache_slow_t *tcache_slow = tsd_tcache_slowp_get(tsd);
 	assert(tcache_slow != NULL);
 
-	/* When the new tcache gc is not enabled, GC one bin at a time. */
-	if (!opt_experimental_tcache_gc) {
-		szind_t szind = tcache_slow->next_gc_bin;
-		tcache_try_gc_bin(tsd, tcache_slow, tcache, szind);
-		tcache_slow->next_gc_bin++;
-		if (tcache_slow->next_gc_bin == tcache_nbins_get(tcache_slow)) {
-			tcache_slow->next_gc_bin = 0;
-		}
-		return;
-	}
-
 	nstime_t now;
 	nstime_copy(&now, &tcache_slow->last_gc_time);
 	nstime_update(&now);
@@ -632,11 +559,8 @@ tcache_alloc_small_hard(tsdn_t *tsdn, arena_t *arena, tcache_t *tcache,
 	assert(filled >= nfill_min && filled <= nfill_max);
 	assert(cache_bin_ncached_get_local(cache_bin) == filled);
 
-	if (opt_experimental_tcache_gc) {
-		tcache_nretain_small_raise(
-		    tcache_slow, binind, filled, ncached_max);
-		tcache_nfill_small_raise(tcache_slow, binind, ncached_max);
-	}
+	tcache_nretain_small_raise(tcache_slow, binind, filled, ncached_max);
+	tcache_nfill_small_raise(tcache_slow, binind, ncached_max);
 	ret = cache_bin_alloc(cache_bin, tcache_success);
 
 	return ret;
@@ -828,7 +752,6 @@ tcache_init(tsd_t *tsd, tcache_slow_t *tcache_slow, tcache_t *tcache, void *mem,
 	tcache_slow->tcache = tcache;
 
 	nstime_init_zero(&tcache_slow->last_gc_time);
-	tcache_slow->next_gc_bin = 0;
 	tcache_slow->next_gc_bin_small = 0;
 	tcache_slow->next_gc_bin_large = SC_NBINS;
 	tcache_slow->arena = NULL;
@@ -854,8 +777,6 @@ tcache_init(tsd_t *tsd, tcache_slow_t *tcache_slow, tcache_t *tcache, void *mem,
 				tcache_slow->bin_nfill[i] = 1;
 				tcache_slow->bin_nretain[i] = 0;
 			}
-			tcache_slow->bin_flush_delay_items[i] =
-			    tcache_gc_item_delay_compute(i);
 		}
 		cache_bin_t *cache_bin = &tcache->bins[i];
 		if (tcache_bin_info[i].ncached_max > 0) {

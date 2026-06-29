@@ -170,7 +170,6 @@ CTL_PROTO(opt_junk)
 CTL_PROTO(opt_zero)
 CTL_PROTO(opt_utrace)
 CTL_PROTO(opt_xmalloc)
-CTL_PROTO(opt_experimental_tcache_gc)
 CTL_PROTO(opt_tcache)
 CTL_PROTO(opt_tcache_max)
 CTL_PROTO(opt_tcache_nslots_small_min)
@@ -178,7 +177,6 @@ CTL_PROTO(opt_tcache_nslots_small_max)
 CTL_PROTO(opt_tcache_nslots_large)
 CTL_PROTO(opt_lg_tcache_nslots_mul)
 CTL_PROTO(opt_tcache_gc_incr_bytes)
-CTL_PROTO(opt_tcache_gc_delay_bytes)
 CTL_PROTO(opt_lg_tcache_flush_small_div)
 CTL_PROTO(opt_lg_tcache_flush_large_div)
 CTL_PROTO(opt_thp)
@@ -551,7 +549,6 @@ static const ctl_named_node_t opt_node[] = {{NAME("abort"), CTL(opt_abort)},
     {NAME("stats_interval_opts"), CTL(opt_stats_interval_opts)},
     {NAME("junk"), CTL(opt_junk)}, {NAME("zero"), CTL(opt_zero)},
     {NAME("utrace"), CTL(opt_utrace)}, {NAME("xmalloc"), CTL(opt_xmalloc)},
-    {NAME("experimental_tcache_gc"), CTL(opt_experimental_tcache_gc)},
     {NAME("tcache"), CTL(opt_tcache)},
     {NAME("tcache_max"), CTL(opt_tcache_max)},
     {NAME("tcache_nslots_small_min"), CTL(opt_tcache_nslots_small_min)},
@@ -559,7 +556,6 @@ static const ctl_named_node_t opt_node[] = {{NAME("abort"), CTL(opt_abort)},
     {NAME("tcache_nslots_large"), CTL(opt_tcache_nslots_large)},
     {NAME("lg_tcache_nslots_mul"), CTL(opt_lg_tcache_nslots_mul)},
     {NAME("tcache_gc_incr_bytes"), CTL(opt_tcache_gc_incr_bytes)},
-    {NAME("tcache_gc_delay_bytes"), CTL(opt_tcache_gc_delay_bytes)},
     {NAME("lg_tcache_flush_small_div"), CTL(opt_lg_tcache_flush_small_div)},
     {NAME("lg_tcache_flush_large_div"), CTL(opt_lg_tcache_flush_large_div)},
     {NAME("thp"), CTL(opt_thp)},
@@ -2287,7 +2283,6 @@ CTL_RO_NL_CGEN(config_fill, opt_junk, opt_junk, const char *)
 CTL_RO_NL_CGEN(config_fill, opt_zero, opt_zero, bool)
 CTL_RO_NL_CGEN(config_utrace, opt_utrace, opt_utrace, bool)
 CTL_RO_NL_CGEN(config_xmalloc, opt_xmalloc, opt_xmalloc, bool)
-CTL_RO_NL_GEN(opt_experimental_tcache_gc, opt_experimental_tcache_gc, bool)
 CTL_RO_NL_GEN(opt_tcache, opt_tcache, bool)
 CTL_RO_NL_GEN(opt_tcache_max, opt_tcache_max, size_t)
 CTL_RO_NL_GEN(
@@ -2297,7 +2292,6 @@ CTL_RO_NL_GEN(
 CTL_RO_NL_GEN(opt_tcache_nslots_large, opt_tcache_nslots_large, unsigned)
 CTL_RO_NL_GEN(opt_lg_tcache_nslots_mul, opt_lg_tcache_nslots_mul, ssize_t)
 CTL_RO_NL_GEN(opt_tcache_gc_incr_bytes, opt_tcache_gc_incr_bytes, size_t)
-CTL_RO_NL_GEN(opt_tcache_gc_delay_bytes, opt_tcache_gc_delay_bytes, size_t)
 CTL_RO_NL_GEN(
     opt_lg_tcache_flush_small_div, opt_lg_tcache_flush_small_div, unsigned)
 CTL_RO_NL_GEN(

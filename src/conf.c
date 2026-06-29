@@ -732,8 +732,6 @@ malloc_conf_init_helper(sc_data_t *sc_data, unsigned bin_shard_sizes[SC_NBINS],
 				CONF_HANDLE_BOOL(opt_xmalloc, "xmalloc")
 			}
 
-			CONF_HANDLE_BOOL(opt_experimental_tcache_gc,
-			    "experimental_tcache_gc")
 			CONF_HANDLE_BOOL(opt_tcache, "tcache")
 			CONF_HANDLE_SIZE_T(opt_tcache_max, "tcache_max", 0,
 			    TCACHE_MAXCLASS_LIMIT, CONF_DONT_CHECK_MIN,
@@ -773,10 +771,6 @@ malloc_conf_init_helper(sc_data_t *sc_data, unsigned bin_shard_sizes[SC_NBINS],
 			    "tcache_gc_incr_bytes", 1024, SIZE_T_MAX,
 			    CONF_CHECK_MIN, CONF_DONT_CHECK_MAX,
 			    /* clip */ true)
-			CONF_HANDLE_SIZE_T(opt_tcache_gc_delay_bytes,
-			    "tcache_gc_delay_bytes", 0, SIZE_T_MAX,
-			    CONF_DONT_CHECK_MIN, CONF_DONT_CHECK_MAX,
-			    /* clip */ false)
 			CONF_HANDLE_UNSIGNED(opt_lg_tcache_flush_small_div,
 			    "lg_tcache_flush_small_div", 1, 16, CONF_CHECK_MIN,
 			    CONF_CHECK_MAX, /* clip */ true)
