@@ -169,6 +169,7 @@ CTL_PROTO(opt_zero)
 CTL_PROTO(opt_utrace)
 CTL_PROTO(opt_xmalloc)
 CTL_PROTO(opt_experimental_tcache_gc)
+CTL_PROTO(opt_experimental_mtt)
 CTL_PROTO(opt_tcache)
 CTL_PROTO(opt_tcache_max)
 CTL_PROTO(opt_tcache_nslots_small_min)
@@ -547,6 +548,7 @@ static const ctl_named_node_t opt_node[] = {{NAME("abort"), CTL(opt_abort)},
     {NAME("junk"), CTL(opt_junk)}, {NAME("zero"), CTL(opt_zero)},
     {NAME("utrace"), CTL(opt_utrace)}, {NAME("xmalloc"), CTL(opt_xmalloc)},
     {NAME("experimental_tcache_gc"), CTL(opt_experimental_tcache_gc)},
+    {NAME("experimental_mtt"), CTL(opt_experimental_mtt)},
     {NAME("tcache"), CTL(opt_tcache)},
     {NAME("tcache_max"), CTL(opt_tcache_max)},
     {NAME("tcache_nslots_small_min"), CTL(opt_tcache_nslots_small_min)},
@@ -2280,6 +2282,7 @@ CTL_RO_NL_CGEN(config_fill, opt_zero, opt_zero, bool)
 CTL_RO_NL_CGEN(config_utrace, opt_utrace, opt_utrace, bool)
 CTL_RO_NL_CGEN(config_xmalloc, opt_xmalloc, opt_xmalloc, bool)
 CTL_RO_NL_GEN(opt_experimental_tcache_gc, opt_experimental_tcache_gc, bool)
+CTL_RO_NL_GEN(opt_experimental_mtt, opt_experimental_mtt, bool)
 CTL_RO_NL_GEN(opt_tcache, opt_tcache, bool)
 CTL_RO_NL_GEN(opt_tcache_max, opt_tcache_max, size_t)
 CTL_RO_NL_GEN(

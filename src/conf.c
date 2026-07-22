@@ -734,6 +734,10 @@ malloc_conf_init_helper(sc_data_t *sc_data, unsigned bin_shard_sizes[SC_NBINS],
 
 			CONF_HANDLE_BOOL(opt_experimental_tcache_gc,
 			    "experimental_tcache_gc")
+			if (config_experimental_mtt) {
+				CONF_HANDLE_BOOL(opt_experimental_mtt,
+				    "experimental_mtt")
+			}
 			CONF_HANDLE_BOOL(opt_tcache, "tcache")
 			CONF_HANDLE_SIZE_T(opt_tcache_max, "tcache_max", 0,
 			    TCACHE_MAXCLASS_LIMIT, CONF_DONT_CHECK_MIN,

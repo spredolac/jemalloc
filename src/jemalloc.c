@@ -400,6 +400,7 @@ JEMALLOC_ALWAYS_INLINE bool
 aligned_usize_get(size_t size, size_t alignment, size_t *usize, szind_t *ind,
     bool bump_empty_aligned_alloc) {
 	assert(usize != NULL);
+	size = mtt_size_adjust(size);
 	if (alignment == 0) {
 		if (ind != NULL) {
 			*ind = sz_size2index(size);
@@ -457,6 +458,7 @@ arena_get_from_ind(tsd_t *tsd, unsigned arena_ind, arena_t **arena_p) {
 JEMALLOC_ALWAYS_INLINE void *
 imalloc_no_sample(static_opts_t *sopts, dynamic_opts_t *dopts, tsd_t *tsd,
     size_t size, size_t usize, szind_t ind, bool slab) {
+	size_t alloc_size = mtt_size_adjust(size);
 	/* Fill in the tcache. */
 	tcache_t *tcache = tcache_get_from_ind(
 	    tsd, dopts->tcache_ind, sopts->slow, /* is_alloc */ true);
@@ -472,7 +474,7 @@ imalloc_no_sample(static_opts_t *sopts, dynamic_opts_t *dopts, tsd_t *tsd,
 		    dopts->alignment, dopts->zero, slab, tcache, arena);
 	}
 
-	return iallocztm_explicit_slab(tsd_tsdn(tsd), size, ind, dopts->zero,
+	return iallocztm_explicit_slab(tsd_tsdn(tsd), alloc_size, ind, dopts->zero,
 	    slab, tcache, false, arena, sopts->slow);
 }
 
@@ -667,6 +669,8 @@ imalloc_body(static_opts_t *sopts, dynamic_opts_t *dopts, tsd_t *tsd) {
 	    && unlikely(opt_junk_alloc)) {
 		junk_alloc_callback(allocation, usize);
 	}
+
+	allocation = mtt_prepare_allocation(tsd_tsdn(tsd), allocation, usize);
 
 	if (sopts->slow) {
 		UTRACE(0, size, allocation);
@@ -1514,6 +1518,15 @@ do_rallocx(void *ptr, size_t size, int flags, bool is_realloc) {
 	assert(ptr != NULL);
 	assert(size != 0);
 	assert(malloc_initialized() || malloc_is_initializer());
+	void *raw_ptr;
+	unsigned old_tag;
+	if (mtt_decode_pointer(ptr, &raw_ptr, &old_tag)) {
+		if (is_realloc) {
+			set_errno(EINVAL);
+		}
+		return NULL;
+	}
+	ptr = raw_ptr;
 	tsd = tsd_fetch();
 	check_entry_exit_locking(tsd_tsdn(tsd));
 
@@ -1565,6 +1578,10 @@ do_rallocx(void *ptr, size_t size, int flags, bool is_realloc) {
 		void  *excess_start = (void *)((byte_t *)p + old_usize);
 		junk_alloc_callback(excess_start, excess_len);
 	}
+	if (config_experimental_mtt && mtt_active) {
+		p = p == ptr ? mtt_tag_pointer(p, old_tag)
+		             : mtt_prepare_allocation(tsd_tsdn(tsd), p, usize);
+	}
 
 	return p;
 label_oom:
@@ -1606,6 +1623,11 @@ do_realloc_nonnull_zero(void *ptr) {
 		return do_rallocx(ptr, 1, MALLOCX_TCACHE_NONE, true);
 	} else if (opt_zero_realloc_action == zero_realloc_action_free) {
 		UTRACE(ptr, 0, 0);
+		void *raw;
+		if (mtt_decode_pointer(ptr, &raw, NULL)) {
+			return NULL;
+		}
+		ptr = raw;
 		if (unlikely(dealloc_no_tsd(ptr))) {
 			return NULL;
 		}
@@ -1782,6 +1804,11 @@ je_xallocx(void *ptr, size_t size, size_t extra, int flags) {
 	assert(size != 0);
 	assert(SIZE_T_MAX - size >= extra);
 	assert(malloc_initialized() || malloc_is_initializer());
+	void *raw;
+	if (mtt_decode_pointer(ptr, &raw, NULL)) {
+		return 0;
+	}
+	ptr = raw;
 	tsd = tsd_fetch();
 	check_entry_exit_locking(tsd_tsdn(tsd));
 
@@ -1860,6 +1887,11 @@ JEMALLOC_ATTR(pure) je_sallocx(const void *ptr, int flags) {
 
 	assert(malloc_initialized() || malloc_is_initializer());
 	assert(ptr != NULL);
+	void *raw;
+	if (mtt_decode_pointer(ptr, &raw, NULL)) {
+		return 0;
+	}
+	ptr = raw;
 
 	tsdn = tsdn_fetch();
 	check_entry_exit_locking(tsdn);
@@ -1883,6 +1915,11 @@ je_dallocx(void *ptr, int flags) {
 
 	assert(ptr != NULL);
 	assert(malloc_initialized() || malloc_is_initializer());
+	void *raw;
+	if (mtt_decode_pointer(ptr, &raw, NULL)) {
+		return;
+	}
+	ptr = raw;
 
 	UTRACE(ptr, 0, 0);
 	if (unlikely(dealloc_no_tsd(ptr))) {
@@ -2086,6 +2123,12 @@ je_malloc_usable_size_impl(JEMALLOC_USABLE_SIZE_CONST void *ptr) {
 	if (unlikely(ptr == NULL)) {
 		ret = 0;
 	} else {
+		void *raw;
+		if (mtt_decode_pointer(ptr, &raw, NULL)) {
+			check_entry_exit_locking(tsdn);
+			return 0;
+		}
+		ptr = raw;
 		if (config_debug || force_ivsalloc) {
 			ret = ivsalloc(tsdn, ptr);
 			assert(force_ivsalloc || ret != 0);

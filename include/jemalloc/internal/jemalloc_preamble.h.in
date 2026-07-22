@@ -222,6 +222,14 @@ static const bool config_uaf_detection =
 #endif
     ;
 
+static const bool config_experimental_mtt =
+#ifdef JEMALLOC_EXPERIMENTAL_MTT
+    true
+#else
+    false
+#endif
+    ;
+
 /* Whether or not the C++ extensions are enabled. */
 static const bool config_enable_cxx =
 #ifdef JEMALLOC_ENABLE_CXX

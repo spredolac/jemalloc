@@ -10,6 +10,7 @@
 #include "jemalloc/internal/jemalloc_internal_types.h"
 #include "jemalloc/internal/large.h"
 #include "jemalloc/internal/malloc_dispatch.h"
+#include "jemalloc/internal/mtt.h"
 #include "jemalloc/internal/safety_check.h"
 #include "jemalloc/internal/sc.h"
 #include "jemalloc/internal/sz.h"
@@ -37,12 +38,16 @@ malloc_dispatch_malloc(tsdn_t *tsdn, arena_t *arena, size_t size, szind_t ind,
 
 static inline void
 malloc_dispatch_dalloc_large_no_tcache(
-    tsdn_t *tsdn, void *ptr, szind_t szind, size_t usize) {
+    tsdn_t *tsdn, void *ptr, szind_t szind, size_t usize, bool is_internal) {
 	/*
 	 * szind both classifies small vs large and validates the extent --
 	 * inactive extents have szind == SC_NSIZES.
 	 */
 	if (config_prof && unlikely(szind < SC_NBINS)) {
+		if (!is_internal) {
+			mtt_prepare_deallocation(tsdn, ptr, usize,
+			    /* reusable */ false);
+		}
 		malloc_dispatch_dalloc_promoted(tsdn, ptr, NULL, true);
 	} else {
 		edata_t *edata = emap_edata_lookup(
@@ -51,12 +56,16 @@ malloc_dispatch_dalloc_large_no_tcache(
 			/* See the comment in isfree. */
 			return;
 		}
+		if (!is_internal) {
+			mtt_prepare_deallocation(tsdn, ptr, usize,
+			    /* reusable */ false);
+		}
 		large_dalloc(tsdn, edata);
 	}
 }
 
 static inline void
-malloc_dispatch_dalloc_no_tcache(tsdn_t *tsdn, void *ptr) {
+malloc_dispatch_dalloc_no_tcache(tsdn_t *tsdn, void *ptr, bool is_internal) {
 	assert(ptr != NULL);
 
 	emap_alloc_ctx_t alloc_ctx;
@@ -74,11 +83,16 @@ malloc_dispatch_dalloc_no_tcache(tsdn_t *tsdn, void *ptr) {
 
 	if (likely(alloc_ctx.slab)) {
 		/* Small allocation. */
+		if (!is_internal) {
+			mtt_prepare_deallocation(tsdn, ptr,
+			    emap_alloc_ctx_usize_get(&alloc_ctx),
+			    /* reusable */ true);
+		}
 		arena_dalloc_small(tsdn, ptr);
 	} else {
 		malloc_dispatch_dalloc_large_no_tcache(
 		    tsdn, ptr, alloc_ctx.szind,
-		    emap_alloc_ctx_usize_get(&alloc_ctx));
+		    emap_alloc_ctx_usize_get(&alloc_ctx), is_internal);
 	}
 }
 
@@ -88,9 +102,13 @@ malloc_dispatch_dalloc_large(tsdn_t *tsdn, void *ptr, tcache_t *tcache,
 	assert(!tsdn_null(tsdn) && tcache != NULL);
 	bool is_sample_promoted = config_prof && szind < SC_NBINS;
 	if (unlikely(is_sample_promoted)) {
+		mtt_prepare_deallocation(tsdn, ptr, usize,
+		    /* reusable */ false);
 		malloc_dispatch_dalloc_promoted(tsdn, ptr, tcache, slow_path);
 	} else {
 		if (tcache_can_cache_large(tcache, szind)) {
+			mtt_prepare_deallocation(tsdn, ptr, usize,
+			    /* reusable */ true);
 			tcache_dalloc_large(
 			    tsdn_tsd(tsdn), tcache, ptr, szind, slow_path);
 		} else {
@@ -100,6 +118,8 @@ malloc_dispatch_dalloc_large(tsdn_t *tsdn, void *ptr, tcache_t *tcache,
 				/* See the comment in isfree. */
 				return;
 			}
+			mtt_prepare_deallocation(tsdn, ptr, usize,
+			    /* reusable */ false);
 			large_dalloc(tsdn, edata);
 		}
 	}
@@ -134,12 +154,12 @@ malloc_dispatch_dalloc_small_safety_check(tsdn_t *tsdn, void *ptr) {
 
 JEMALLOC_ALWAYS_INLINE void
 malloc_dispatch_dalloc(tsdn_t *tsdn, void *ptr, tcache_t *tcache,
-    emap_alloc_ctx_t *caller_alloc_ctx, bool slow_path) {
+    emap_alloc_ctx_t *caller_alloc_ctx, bool slow_path, bool is_internal) {
 	assert(!tsdn_null(tsdn) || tcache == NULL);
 	assert(ptr != NULL);
 
 	if (unlikely(tcache == NULL)) {
-		malloc_dispatch_dalloc_no_tcache(tsdn, ptr);
+		malloc_dispatch_dalloc_no_tcache(tsdn, ptr, is_internal);
 		return;
 	}
 
@@ -166,6 +186,11 @@ malloc_dispatch_dalloc(tsdn_t *tsdn, void *ptr, tcache_t *tcache,
 		/* Small allocation. */
 		if (malloc_dispatch_dalloc_small_safety_check(tsdn, ptr)) {
 			return;
+		}
+		if (!is_internal) {
+			mtt_prepare_deallocation(tsdn, ptr,
+			    emap_alloc_ctx_usize_get(&alloc_ctx),
+			    /* reusable */ true);
 		}
 		tcache_dalloc_small(
 		    tsdn_tsd(tsdn), tcache, ptr, alloc_ctx.szind, slow_path);
@@ -209,11 +234,15 @@ malloc_dispatch_sdalloc_no_tcache(tsdn_t *tsdn, void *ptr, size_t size) {
 
 	if (likely(alloc_ctx.slab)) {
 		/* Small allocation. */
+		mtt_prepare_deallocation(tsdn, ptr,
+		    emap_alloc_ctx_usize_get(&alloc_ctx),
+		    /* reusable */ true);
 		arena_dalloc_small(tsdn, ptr);
 	} else {
 		malloc_dispatch_dalloc_large_no_tcache(
 		    tsdn, ptr, alloc_ctx.szind,
-		    emap_alloc_ctx_usize_get(&alloc_ctx));
+		    emap_alloc_ctx_usize_get(&alloc_ctx),
+		    /* is_internal */ false);
 	}
 }
 
@@ -265,6 +294,8 @@ malloc_dispatch_sdalloc(tsdn_t *tsdn, void *ptr, size_t size, tcache_t *tcache,
 		if (malloc_dispatch_dalloc_small_safety_check(tsdn, ptr)) {
 			return;
 		}
+		mtt_prepare_deallocation(tsdn, ptr, sz_s2u(size),
+		    /* reusable */ true);
 		tcache_dalloc_small(
 		    tsdn_tsd(tsdn), tcache, ptr, alloc_ctx.szind, slow_path);
 	} else {

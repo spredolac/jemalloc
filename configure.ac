@@ -1251,7 +1251,7 @@ AC_ARG_WITH([export],
 fi]
 )
 
-public_syms="aligned_alloc calloc dallocx free free_sized free_aligned_sized mallctl mallctlbymib mallctlnametomib malloc malloc_conf malloc_conf_2_conf_harder malloc_message malloc_stats_print malloc_usable_size mallocx smallocx_${jemalloc_version_gid} nallocx posix_memalign rallocx realloc sallocx sdallocx xallocx"
+public_syms="aligned_alloc calloc dallocx experimental_mtt_boot free free_sized free_aligned_sized mallctl mallctlbymib mallctlnametomib malloc malloc_conf malloc_conf_2_conf_harder malloc_message malloc_stats_print malloc_usable_size mallocx smallocx_${jemalloc_version_gid} nallocx posix_memalign rallocx realloc sallocx sdallocx xallocx"
 dnl Check for additional platform-specific public API functions.
 AC_CHECK_FUNC([memalign],
 	      [AC_DEFINE([JEMALLOC_OVERRIDE_MEMALIGN], [ ], [ ])
@@ -1900,6 +1900,30 @@ if test "x$enable_uaf_detection" = "x1" ; then
   AC_DEFINE([JEMALLOC_UAF_DETECTION], [ ], [ ])
 fi
 AC_SUBST([enable_uaf_detection])
+
+dnl Experimental x86 Memory Tagging Technology support is disabled by default.
+AC_ARG_ENABLE([experimental-mtt],
+  [AS_HELP_STRING([--enable-experimental-mtt],
+  [Enable experimental x86 MTT allocator integration])],
+[if test "x$enable_experimental_mtt" = "xno" ; then
+  enable_experimental_mtt="0"
+else
+  enable_experimental_mtt="1"
+fi
+],
+[enable_experimental_mtt="0"]
+)
+if test "x$enable_experimental_mtt" = "x1" ; then
+  if test "x${LG_SIZEOF_PTR}" != "x3" ; then
+    AC_MSG_ERROR([--enable-experimental-mtt requires 64-bit pointers])
+  fi
+  case "${host_cpu}" in
+    x86_64|amd64) ;;
+    *) AC_MSG_ERROR([--enable-experimental-mtt currently requires x86-64]) ;;
+  esac
+  AC_DEFINE([JEMALLOC_EXPERIMENTAL_MTT], [ ], [ ])
+fi
+AC_SUBST([enable_experimental_mtt])
 
 JE_COMPILABLE([a program using __builtin_unreachable], [
 void foo (void) {
@@ -3157,6 +3181,7 @@ AC_MSG_RESULT([debug              : ${enable_debug}])
 AC_MSG_RESULT([stats              : ${enable_stats}])
 AC_MSG_RESULT([user_config        : ${enable_user_config}])
 AC_MSG_RESULT([experimental_smallocx : ${enable_experimental_smallocx}])
+AC_MSG_RESULT([experimental_mtt : ${enable_experimental_mtt}])
 AC_MSG_RESULT([prof               : ${enable_prof}])
 AC_MSG_RESULT([prof-libunwind     : ${enable_prof_libunwind}])
 AC_MSG_RESULT([prof-libgcc        : ${enable_prof_libgcc}])

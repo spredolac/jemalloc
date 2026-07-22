@@ -136,6 +136,7 @@ C_SRCS := $(srcroot)src/jemalloc.c \
 	$(srcroot)src/malloc_io.c \
 	$(srcroot)src/conf.c \
 	$(srcroot)src/mutex.c \
+	$(srcroot)src/mtt.c \
 	$(srcroot)src/nstime.c \
 	$(srcroot)src/pa.c \
 	$(srcroot)src/pa_extra.c \
@@ -264,6 +265,7 @@ TESTS_UNIT := \
 	$(srcroot)test/unit/math.c \
 	$(srcroot)test/unit/mpsc_queue.c \
 	$(srcroot)test/unit/mq.c \
+	$(srcroot)test/unit/mtt.c \
 	$(srcroot)test/unit/mtx.c \
 	$(srcroot)test/unit/nstime.c \
 	$(srcroot)test/unit/ncached_max.c \

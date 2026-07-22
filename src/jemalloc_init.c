@@ -16,6 +16,7 @@
 #include "jemalloc/internal/jemalloc_init.h"
 #include "jemalloc/internal/malloc_io.h"
 #include "jemalloc/internal/mutex.h"
+#include "jemalloc/internal/mtt.h"
 #include "jemalloc/internal/san.h"
 #include "jemalloc/internal/sc.h"
 #include "jemalloc/internal/spin.h"
@@ -181,6 +182,10 @@ malloc_init_hard_a0_locked(void) {
 	char readlink_buf[PATH_MAX + 1];
 	readlink_buf[0] = '\0';
 	malloc_conf_init(&sc_data, bin_shard_sizes, readlink_buf);
+	if (mtt_boot()) {
+		/* Explicitly requesting a security mode must not fail open. */
+		malloc_abort_invalid_conf();
+	}
 	san_init(opt_lg_san_uaf_align);
 	sz_boot(&sc_data, opt_cache_oblivious);
 	bin_info_boot(&sc_data, bin_shard_sizes);

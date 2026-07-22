@@ -12,6 +12,16 @@ extern JEMALLOC_EXPORT const char	*@je_@malloc_conf_2_conf_harder;
 extern JEMALLOC_EXPORT void		(*@je_@malloc_message)(void *cbopaque,
     const char *s);
 
+/*
+ * Experimental link-time hook for x86 Memory Tagging Technology.  A platform
+ * runtime may provide a strong definition.  It must not allocate and returns
+ * false on success.  It must provide readable, writable, zero-initialized tag
+ * coverage for newly mapped heap addresses.  The first implementation accepts
+ * only a 16-byte granule.
+ */
+JEMALLOC_EXPORT bool @je_@experimental_mtt_boot(
+    uintptr_t *tag_table_base, size_t *tag_granule);
+
 JEMALLOC_EXPORT JEMALLOC_ALLOCATOR JEMALLOC_RESTRICT_RETURN
     void JEMALLOC_SYS_NOTHROW	*@je_@malloc(size_t size)
     JEMALLOC_CXX_THROW JEMALLOC_ATTR(malloc) JEMALLOC_ALLOC_SIZE(1);

@@ -14,6 +14,7 @@
 #include "jemalloc/internal/jemalloc_internal_inlines_c.h"
 #include "jemalloc/internal/large.h"
 #include "jemalloc/internal/mutex.h"
+#include "jemalloc/internal/mtt.h"
 #include "jemalloc/internal/prof.h"
 #include "jemalloc/internal/prof_inlines.h"
 #include "jemalloc/internal/rtree.h"
@@ -445,6 +446,10 @@ arena_extent_ralloc_large_expand(
 
 static void
 arena_slab_dalloc(tsdn_t *tsdn, arena_t *arena, edata_t *slab) {
+	if (config_experimental_mtt && mtt_active) {
+		mtt_set_tag_range(
+		    edata_addr_get(slab), edata_size_get(slab), MTT_FREE_TAG);
+	}
 	bool deferred_work_generated = false;
 	pa_dalloc(tsdn, &arena->pa_shard, slab, &deferred_work_generated);
 	if (deferred_work_generated) {

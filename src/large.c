@@ -7,6 +7,7 @@
 #include "jemalloc/internal/jemalloc_internal_inlines_c.h"
 #include "jemalloc/internal/large.h"
 #include "jemalloc/internal/mutex.h"
+#include "jemalloc/internal/mtt.h"
 #include "jemalloc/internal/prof.h"
 #include "jemalloc/internal/prof_inlines.h"
 #include "jemalloc/internal/prof_recent.h"
@@ -69,12 +70,22 @@ large_ralloc_no_move_shrink(tsdn_t *tsdn, edata_t *edata, size_t usize) {
 	if (ehooks_split_will_fail(ehooks)) {
 		return true;
 	}
+	unsigned old_tag = 0;
+	void *tail = (void *)((byte_t *)edata_addr_get(edata) + usize);
+	size_t tail_size = old_usize - usize;
+	if (config_experimental_mtt && mtt_active) {
+		old_tag = mtt_memory_tag(edata_addr_get(edata));
+		mtt_set_tag_range(tail, tail_size, MTT_FREE_TAG);
+	}
 
 	bool deferred_work_generated = false;
 	bool err = pa_shrink(tsdn, &arena->pa_shard, edata, old_size,
 	    usize + sz_large_pad, sz_size2index(usize),
 	    &deferred_work_generated);
 	if (err) {
+		if (config_experimental_mtt && mtt_active) {
+			mtt_set_tag_range(tail, tail_size, old_tag);
+		}
 		return true;
 	}
 	if (deferred_work_generated) {
@@ -126,6 +137,12 @@ large_ralloc_no_move_expand(
 			assert(nzero > 0);
 			memset(zbase, 0, nzero);
 		}
+	}
+	if (config_experimental_mtt && mtt_active) {
+		unsigned tag = mtt_memory_tag(edata_addr_get(edata));
+		void *tail = (void *)((byte_t *)edata_addr_get(edata)
+		    + old_usize);
+		mtt_set_tag_range(tail, usize - old_usize, tag);
 	}
 	arena_extent_ralloc_large_expand(tsdn, arena, edata, old_usize);
 
@@ -244,6 +261,10 @@ large_dalloc_prep_impl(
 
 static void
 large_dalloc_finish_impl(tsdn_t *tsdn, arena_t *arena, edata_t *edata) {
+	if (config_experimental_mtt && mtt_active) {
+		mtt_set_tag_range(
+		    edata_base_get(edata), edata_size_get(edata), MTT_FREE_TAG);
+	}
 	bool deferred_work_generated = false;
 	pa_dalloc(tsdn, &arena->pa_shard, edata, &deferred_work_generated);
 	if (deferred_work_generated) {

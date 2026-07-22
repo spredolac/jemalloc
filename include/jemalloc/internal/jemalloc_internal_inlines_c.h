@@ -9,6 +9,7 @@
 #include "jemalloc/internal/jemalloc_internal_types.h"
 #include "jemalloc/internal/log.h"
 #include "jemalloc/internal/malloc_dispatch_inlines.h"
+#include "jemalloc/internal/mtt.h"
 #include "jemalloc/internal/sz.h"
 #include "jemalloc/internal/thread_event.h"
 #include "jemalloc/internal/witness.h"
@@ -158,7 +159,8 @@ idalloctm(tsdn_t *tsdn, void *ptr, tcache_t *tcache,
 	    && tsd_reentrancy_level_get(tsdn_tsd(tsdn)) != 0) {
 		assert(tcache == NULL);
 	}
-	malloc_dispatch_dalloc(tsdn, ptr, tcache, alloc_ctx, slow_path);
+	malloc_dispatch_dalloc(
+	    tsdn, ptr, tcache, alloc_ctx, slow_path, is_internal);
 }
 
 JEMALLOC_ALWAYS_INLINE void
@@ -290,7 +292,8 @@ imalloc_fastpath(size_t size, void *(fallback_alloc)(size_t)) {
 	}
 
 	tsd_t *tsd = tsd_get(false);
-	if (unlikely((size > SC_LOOKUP_MAXCLASS) || tsd == NULL)) {
+	size_t lookup_size = mtt_size_adjust(size);
+	if (unlikely((lookup_size > SC_LOOKUP_MAXCLASS) || tsd == NULL)) {
 		return fallback_alloc(size);
 	}
 	/*
@@ -309,11 +312,11 @@ imalloc_fastpath(size_t size, void *(fallback_alloc)(size_t)) {
 	 * it's not always needed in the core allocation logic.
 	 */
 	size_t usize;
-	sz_size2index_usize_fastpath(size, &ind, &usize);
+	sz_size2index_usize_fastpath(lookup_size, &ind, &usize);
 	/* Fast path relies on size being a bin. */
 	assert(ind < SC_NBINS);
 	assert((SC_LOOKUP_MAXCLASS < SC_SMALL_MAXCLASS)
-	    && (size <= SC_SMALL_MAXCLASS));
+	    && (lookup_size <= SC_SMALL_MAXCLASS));
 
 	uint64_t allocated, threshold;
 	te_malloc_fastpath_ctx(tsd, &allocated, &threshold);
@@ -327,7 +330,7 @@ imalloc_fastpath(size_t size, void *(fallback_alloc)(size_t)) {
 	if (!malloc_initialized()) {
 		assert(threshold == 0);
 	} else {
-		assert(ind == sz_size2index(size));
+		assert(ind == sz_size2index(lookup_size));
 		assert(usize > 0 && usize == sz_index2size(ind));
 	}
 	/*
@@ -356,12 +359,12 @@ imalloc_fastpath(size_t size, void *(fallback_alloc)(size_t)) {
 	ret = cache_bin_alloc_easy(bin, &tcache_success);
 	if (tcache_success) {
 		fastpath_success_finish(tsd, allocated_after, bin, ret);
-		return ret;
+		return mtt_prepare_allocation(tsd_tsdn(tsd), ret, usize);
 	}
 	ret = cache_bin_alloc(bin, &tcache_success);
 	if (tcache_success) {
 		fastpath_success_finish(tsd, allocated_after, bin, ret);
-		return ret;
+		return mtt_prepare_allocation(tsd_tsdn(tsd), ret, usize);
 	}
 
 	return fallback_alloc(size);
@@ -465,6 +468,9 @@ free_fastpath_nonfast_aligned(void *ptr, bool check_prof) {
 JEMALLOC_ALWAYS_INLINE
 bool
 free_fastpath(void *ptr, size_t size, bool size_hint) {
+	if (size_hint) {
+		size = mtt_size_adjust(size);
+	}
 	tsd_t *tsd = tsd_get(false);
 	/* The branch gets optimized away unless tsd_get_allocates(). */
 	if (unlikely(tsd == NULL)) {
@@ -548,9 +554,16 @@ free_fastpath(void *ptr, size_t size, bool size_hint) {
          */
 	assert(!opt_junk_free);
 
-	if (!cache_bin_dalloc_easy(bin, ptr)) {
+	if (cache_bin_full(bin)) {
 		return false;
 	}
+	if (unlikely(cache_bin_dalloc_safety_checks(bin, ptr))) {
+		return true;
+	}
+	mtt_prepare_deallocation(tsd_tsdn(tsd), ptr, usize,
+	    /* reusable */ true);
+	bool cached = cache_bin_dalloc_easy(bin, ptr);
+	assert(cached);
 
 	*tsd_thread_deallocatedp_get(tsd) = deallocated_after;
 
@@ -559,6 +572,11 @@ free_fastpath(void *ptr, size_t size, bool size_hint) {
 
 JEMALLOC_ALWAYS_INLINE void JEMALLOC_NOTHROW
 je_sdallocx_noflags(void *ptr, size_t size) {
+	void *raw;
+	if (mtt_decode_pointer(ptr, &raw, NULL)) {
+		return;
+	}
+	ptr = raw;
 	if (!free_fastpath(ptr, size, true)) {
 		sdallocx_default(ptr, size, 0);
 	}
@@ -566,6 +584,11 @@ je_sdallocx_noflags(void *ptr, size_t size) {
 
 JEMALLOC_ALWAYS_INLINE void JEMALLOC_NOTHROW
 je_sdallocx_impl(void *ptr, size_t size, int flags) {
+	void *raw;
+	if (mtt_decode_pointer(ptr, &raw, NULL)) {
+		return;
+	}
+	ptr = raw;
 	if (flags != 0 || !free_fastpath(ptr, size, true)) {
 		sdallocx_default(ptr, size, flags);
 	}
@@ -573,6 +596,13 @@ je_sdallocx_impl(void *ptr, size_t size, int flags) {
 
 JEMALLOC_ALWAYS_INLINE void JEMALLOC_NOTHROW
 je_free_impl(void *ptr) {
+	if (ptr != NULL) {
+		void *raw;
+		if (mtt_decode_pointer(ptr, &raw, NULL)) {
+			return;
+		}
+		ptr = raw;
+	}
 	if (!free_fastpath(ptr, 0, false)) {
 		free_default(ptr);
 	}
