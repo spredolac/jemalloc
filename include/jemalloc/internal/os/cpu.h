@@ -18,6 +18,8 @@
 
 /* Functions required for implementation in each backend. */
 JEMALLOC_ALWAYS_INLINE unsigned os_cpu_ncpus(void);
+JEMALLOC_ALWAYS_INLINE unsigned os_cpu_affinity_cpus(unsigned *cpus,
+    unsigned max_cpus);
 JEMALLOC_ALWAYS_INLINE bool os_cpu_count_is_deterministic(void);
 JEMALLOC_ALWAYS_INLINE int os_cpu_current(void);
 

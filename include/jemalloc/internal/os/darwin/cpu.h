@@ -32,6 +32,13 @@ os_cpu_ncpus(void) {
 	return ((result == -1) ? 1 : (unsigned)result);
 }
 
+JEMALLOC_ALWAYS_INLINE unsigned
+os_cpu_affinity_cpus(unsigned *cpus, unsigned max_cpus) {
+	(void)cpus;
+	(void)max_cpus;
+	return 0;
+}
+
 JEMALLOC_ALWAYS_INLINE bool
 os_cpu_count_is_deterministic(void) {
 	long cpu_onln = sysconf(_SC_NPROCESSORS_ONLN);

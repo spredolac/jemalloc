@@ -38,6 +38,48 @@ os_cpu_ncpus(void) {
 }
 
 /*
+ * Write the ids of the CPUs this thread is allowed to run on into cpus, in
+ * ascending order, and return how many were written.  Returns 0 if the mask is
+ * unavailable or does not fit, in which case cpus is untouched.
+ */
+JEMALLOC_ALWAYS_INLINE unsigned
+os_cpu_affinity_cpus(unsigned *cpus, unsigned max_cpus) {
+#if defined(CPU_COUNT) && defined(CPU_ISSET)
+	if (max_cpus == 0) {
+		return 0;
+	}
+
+#	if defined(__FreeBSD__) || defined(__DragonFly__)
+	cpuset_t set;
+#	else
+	cpu_set_t set;
+#	endif
+	int err;
+#	if defined(JEMALLOC_HAVE_SCHED_SETAFFINITY)
+	err = sched_getaffinity(0, sizeof(set), &set);
+#	else
+	err = pthread_getaffinity_np(pthread_self(), sizeof(set), &set);
+#	endif
+	if (err != 0) {
+		return 0;
+	}
+
+	unsigned n = 0;
+	/* The mask is a fixed-size bit set; it names no CPU beyond its width. */
+	for (unsigned cpu = 0; cpu < sizeof(set) * 8 && n < max_cpus; cpu++) {
+		if (CPU_ISSET(cpu, &set)) {
+			cpus[n++] = cpu;
+		}
+	}
+	return n;
+#else
+	(void)cpus;
+	(void)max_cpus;
+	return 0;
+#endif
+}
+
+/*
  * Ensure that number of CPUs is determistinc, i.e. it is the same based on:
  * - sched_getaffinity()
  * - _SC_NPROCESSORS_ONLN
