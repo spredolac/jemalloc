@@ -391,10 +391,19 @@ prof_tdata_t *prof_tdata_init(tsd_t *tsd);
 prof_tdata_t *prof_tdata_reinit(tsd_t *tsd, prof_tdata_t *tdata);
 
 void prof_alloc_rollback(tsd_t *tsd, prof_tctx_t *tctx);
-void prof_malloc_sample_object(
+JEMALLOC_NOINLINE void prof_malloc_sample_object(
     tsd_t *tsd, const void *ptr, size_t size, size_t usize, prof_tctx_t *tctx);
 void prof_free_sampled_object(
     tsd_t *tsd, const void *ptr, size_t usize, prof_info_t *prof_info);
+#if defined(JEMALLOC_EXPERIMENTAL_USDT_STAP) || \
+    defined(JEMALLOC_EXPERIMENTAL_USDT_CUSTOM)
+JEMALLOC_NOINLINE void prof_sample_free_usdt(const void *ptr);
+#else
+JEMALLOC_ALWAYS_INLINE void
+prof_sample_free_usdt(const void *ptr) {
+	(void)ptr;
+}
+#endif
 prof_tctx_t *prof_tctx_create(tsd_t *tsd);
 void         prof_idump(tsdn_t *tsdn);
 bool         prof_mdump(tsd_t *tsd, const char *filename);

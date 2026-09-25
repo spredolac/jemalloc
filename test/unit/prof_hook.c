@@ -1,5 +1,8 @@
 #include "test/jemalloc_test.h"
 
+extern uint64_t prof_sample_weighted_size(
+    size_t size, size_t usize, size_t unbiased_size);
+
 /*
  * The MALLOC_CONF of this test has lg_prof_sample:0, meaning that every single
  * allocation will be sampled (and trigger relevant hooks).
@@ -461,9 +464,27 @@ TEST_BEGIN(test_prof_hook_noop) {
 }
 TEST_END
 
+TEST_BEGIN(test_prof_sample_weighted_size) {
+	test_skip_if(!config_prof);
+
+	expect_u64_eq(prof_sample_weighted_size(17, 32, 32), 17,
+	    "A probability of one should preserve requested size");
+	expect_u64_eq(prof_sample_weighted_size(17, 32, 48), 26,
+	    "Weighted requested size should round to the nearest byte");
+	expect_u64_eq(prof_sample_weighted_size(0, 8, SIZE_T_MAX), 0,
+	    "A zero-byte request should have zero weight");
+#if LG_SIZEOF_PTR == 3
+	expect_u64_eq(prof_sample_weighted_size(
+	                  SIZE_T_MAX - 1, SIZE_T_MAX, SIZE_T_MAX),
+	    SIZE_T_MAX - 1, "The intermediate product should not overflow");
+#endif
+}
+TEST_END
+
 int
 main(void) {
 	return test(test_prof_backtrace_hook_replace,
 	    test_prof_backtrace_hook_augment, test_prof_dump_hook,
-	    test_prof_sample_hooks, test_prof_hook_noop);
+	    test_prof_sample_hooks, test_prof_hook_noop,
+	    test_prof_sample_weighted_size);
 }

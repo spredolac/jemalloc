@@ -215,6 +215,14 @@ prof_realloc(tsd_t *tsd, const void *ptr, size_t size, size_t usize,
 	old_sampled = prof_tctx_is_valid(old_prof_info->alloc_tctx);
 	moved = (ptr != old_ptr);
 
+	if (unlikely(old_sampled)) {
+		/*
+		 * Retire the old sample first.  A sampled in-place realloc
+		 * publishes its replacement at the same address below.
+		 */
+		prof_sample_free_usdt(old_ptr);
+	}
+
 	if (unlikely(sampled)) {
 		prof_malloc_sample_object(tsd, ptr, size, usize, tctx);
 	} else if (moved) {
@@ -281,6 +289,7 @@ prof_free(
 
 	if (unlikely(prof_tctx_is_valid(prof_info.alloc_tctx))) {
 		assert(prof_sample_aligned(ptr));
+		prof_sample_free_usdt(ptr);
 		prof_free_sampled_object(tsd, ptr, usize, &prof_info);
 	}
 }
