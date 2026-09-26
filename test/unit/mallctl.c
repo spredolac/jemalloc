@@ -563,6 +563,7 @@ TEST_BEGIN(test_mallctl_opt) {
 	TEST_MALLCTL_OPT(const char *, thp, always);
 	TEST_MALLCTL_OPT(const char *, zero_realloc, always);
 	TEST_MALLCTL_OPT(bool, prof, prof);
+	TEST_MALLCTL_OPT(bool, prof_usdt_only, prof);
 	TEST_MALLCTL_OPT(const char *, prof_prefix, prof);
 	TEST_MALLCTL_OPT(bool, prof_active, prof);
 	TEST_MALLCTL_OPT(unsigned, prof_bt_max, prof);

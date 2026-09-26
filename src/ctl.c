@@ -174,6 +174,7 @@ CTL_PROTO(opt_tcache_gc_incr_bytes)
 CTL_PROTO(opt_thp)
 CTL_PROTO(opt_lg_extent_max_active_fit)
 CTL_PROTO(opt_prof)
+CTL_PROTO(opt_prof_usdt_only)
 CTL_PROTO(opt_prof_prefix)
 CTL_PROTO(opt_prof_active)
 CTL_PROTO(opt_prof_thread_active_init)
@@ -542,7 +543,9 @@ static const ctl_named_node_t opt_node[] = {{NAME("abort"), CTL(opt_abort)},
     {NAME("tcache_gc_incr_bytes"), CTL(opt_tcache_gc_incr_bytes)},
     {NAME("thp"), CTL(opt_thp)},
     {NAME("lg_extent_max_active_fit"), CTL(opt_lg_extent_max_active_fit)},
-    {NAME("prof"), CTL(opt_prof)}, {NAME("prof_prefix"), CTL(opt_prof_prefix)},
+    {NAME("prof"), CTL(opt_prof)},
+    {NAME("prof_usdt_only"), CTL(opt_prof_usdt_only)},
+    {NAME("prof_prefix"), CTL(opt_prof_prefix)},
     {NAME("prof_active"), CTL(opt_prof_active)},
     {NAME("prof_thread_active_init"), CTL(opt_prof_thread_active_init)},
     {NAME("prof_bt_max"), CTL(opt_prof_bt_max)},
@@ -2269,6 +2272,7 @@ CTL_RO_NL_GEN(
 CTL_RO_NL_GEN(
     opt_process_madvise_max_batch, opt_process_madvise_max_batch, size_t)
 CTL_RO_NL_CGEN(config_prof, opt_prof, opt_prof, bool)
+CTL_RO_NL_CGEN(config_prof, opt_prof_usdt_only, opt_prof_usdt_only, bool)
 CTL_RO_NL_CGEN(config_prof, opt_prof_prefix, opt_prof_prefix, const char *)
 CTL_RO_NL_CGEN(config_prof, opt_prof_active, opt_prof_active, bool)
 CTL_RO_NL_CGEN(

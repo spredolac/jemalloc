@@ -107,7 +107,18 @@ prof_info_get_and_reset_recent(tsd_t *tsd, const void *ptr,
 
 JEMALLOC_ALWAYS_INLINE bool
 prof_tctx_is_valid(const prof_tctx_t *tctx) {
-	return tctx != NULL && tctx != PROF_TCTX_SENTINEL;
+	return tctx != NULL && tctx != PROF_TCTX_SENTINEL
+	    && tctx != PROF_TCTX_USDT;
+}
+
+JEMALLOC_ALWAYS_INLINE bool
+prof_tctx_is_usdt(const prof_tctx_t *tctx) {
+	return tctx == PROF_TCTX_USDT;
+}
+
+JEMALLOC_ALWAYS_INLINE bool
+prof_tctx_is_sampled(const prof_tctx_t *tctx) {
+	return prof_tctx_is_valid(tctx) || prof_tctx_is_usdt(tctx);
 }
 
 JEMALLOC_ALWAYS_INLINE void
@@ -166,6 +177,8 @@ prof_alloc_prep(tsd_t *tsd, bool prof_active, bool sample_event) {
 	if (!prof_active
 	    || likely(prof_sample_should_skip(tsd, sample_event))) {
 		ret = PROF_TCTX_SENTINEL;
+	} else if (opt_prof_usdt_only) {
+		ret = PROF_TCTX_USDT;
 	} else {
 		ret = prof_tctx_create(tsd);
 	}
@@ -180,7 +193,7 @@ prof_malloc(tsd_t *tsd, const void *ptr, size_t size, size_t usize,
 	assert(ptr != NULL);
 	assert(usize == isalloc(tsd_tsdn(tsd), ptr));
 
-	if (unlikely(prof_tctx_is_valid(tctx))) {
+	if (unlikely(prof_tctx_is_sampled(tctx))) {
 		prof_malloc_sample_object(tsd, ptr, size, usize, tctx);
 	} else {
 		prof_tctx_reset(tsd, ptr, alloc_ctx);
@@ -211,8 +224,8 @@ prof_realloc(tsd_t *tsd, const void *ptr, size_t size, size_t usize,
 		}
 	}
 
-	sampled = prof_tctx_is_valid(tctx);
-	old_sampled = prof_tctx_is_valid(old_prof_info->alloc_tctx);
+	sampled = prof_tctx_is_sampled(tctx);
+	old_sampled = prof_tctx_is_sampled(old_prof_info->alloc_tctx);
 	moved = (ptr != old_ptr);
 
 	if (unlikely(old_sampled)) {
@@ -249,8 +262,10 @@ prof_realloc(tsd_t *tsd, const void *ptr, size_t size, size_t usize,
 	 * counters.
 	 */
 	if (unlikely(old_sampled)) {
-		prof_free_sampled_object(
-		    tsd, old_ptr, old_usize, old_prof_info);
+		if (prof_tctx_is_valid(old_prof_info->alloc_tctx)) {
+			prof_free_sampled_object(
+			    tsd, old_ptr, old_usize, old_prof_info);
+		}
 	}
 }
 
@@ -271,7 +286,7 @@ JEMALLOC_ALWAYS_INLINE bool
 prof_sampled(tsd_t *tsd, const void *ptr) {
 	prof_info_t prof_info;
 	prof_info_get(tsd, ptr, NULL, &prof_info);
-	bool sampled = prof_tctx_is_valid(prof_info.alloc_tctx);
+	bool sampled = prof_tctx_is_sampled(prof_info.alloc_tctx);
 	if (sampled) {
 		assert(prof_sample_aligned(ptr));
 	}
@@ -287,10 +302,12 @@ prof_free(
 	cassert(config_prof);
 	assert(usize == isalloc(tsd_tsdn(tsd), ptr));
 
-	if (unlikely(prof_tctx_is_valid(prof_info.alloc_tctx))) {
+	if (unlikely(prof_tctx_is_sampled(prof_info.alloc_tctx))) {
 		assert(prof_sample_aligned(ptr));
 		prof_sample_free_usdt(ptr);
-		prof_free_sampled_object(tsd, ptr, usize, &prof_info);
+		if (prof_tctx_is_valid(prof_info.alloc_tctx)) {
+			prof_free_sampled_object(tsd, ptr, usize, &prof_info);
+		}
 	}
 }
 

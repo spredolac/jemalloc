@@ -276,8 +276,28 @@ TEST_BEGIN(test_mdump_maps_error) {
 }
 TEST_END
 
+TEST_BEGIN(test_mdump_usdt_only) {
+	test_skip_if(!config_prof);
+
+	prof_dump_open_file_t *open_file_orig = prof_dump_open_file;
+	prof_dump_open_file = prof_dump_open_file_intercept;
+	did_prof_dump_open = false;
+	opt_prof_usdt_only = true;
+
+	expect_d_eq(mallctl("prof.dump", NULL, NULL, (void *)&test_filename,
+	                sizeof(test_filename)),
+	    EFAULT, "Dump should be unavailable in USDT-only mode");
+	expect_false(did_prof_dump_open,
+	    "USDT-only mode should not create an empty profile");
+
+	opt_prof_usdt_only = false;
+	prof_dump_open_file = open_file_orig;
+}
+TEST_END
+
 int
 main(void) {
 	return test(test_prof_parse_pid_namespace, test_mdump_normal,
-	    test_mdump_output_error, test_mdump_maps_error);
+	    test_mdump_output_error, test_mdump_maps_error,
+	    test_mdump_usdt_only);
 }

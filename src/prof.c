@@ -30,6 +30,7 @@
 
 bool     opt_prof = false;
 bool     opt_prof_active = true;
+bool     opt_prof_usdt_only = false;
 bool     opt_prof_thread_active_init = true;
 unsigned opt_prof_bt_max = PROF_BT_MAX_DEFAULT;
 size_t   opt_lg_prof_sample = LG_PROF_SAMPLE_DEFAULT;
@@ -89,6 +90,8 @@ static atomic_p_t prof_sample_hook;
 
 /* Logically a prof_sample_free_hook_t. */
 static atomic_p_t prof_sample_free_hook;
+
+static atomic_b_t prof_usdt_only_dump_warned = ATOMIC_INIT(false);
 
 /******************************************************************************/
 
@@ -162,15 +165,24 @@ prof_malloc_sample_object(
     tsd_t *tsd, const void *ptr, size_t size, size_t usize, prof_tctx_t *tctx) {
 	cassert(config_prof);
 
+	edata_t *edata = emap_edata_lookup(
+	    tsd_tsdn(tsd), &arena_emap_global, ptr);
+	szind_t szind = sz_size2index(usize);
+	uint64_t weighted_size;
+	if (prof_tctx_is_usdt(tctx)) {
+		edata_prof_tctx_set(edata, tctx);
+
+		/* As below, a prof_reset race with this table read is benign. */
+		weighted_size = prof_sample_weighted_size(
+		    size, usize, prof_unbiased_sz[szind]);
+		goto emit_usdt;
+	}
+
 	if (opt_prof_sys_thread_name) {
 		prof_sys_thread_name_fetch(tsd);
 	}
 
-	edata_t *edata = emap_edata_lookup(
-	    tsd_tsdn(tsd), &arena_emap_global, ptr);
 	prof_info_set(tsd, edata, tctx, size);
-
-	szind_t szind = sz_size2index(usize);
 
 	malloc_mutex_lock(tsd_tsdn(tsd), tctx->tdata->lock);
 	/*
@@ -185,7 +197,7 @@ prof_malloc_sample_object(
 	 */
 	size_t shifted_unbiased_cnt = prof_shifted_unbiased_cnt[szind];
 	size_t unbiased_bytes = prof_unbiased_sz[szind];
-	uint64_t weighted_size = prof_sample_weighted_size(
+	weighted_size = prof_sample_weighted_size(
 	    size, usize, unbiased_bytes);
 	tctx->cnts.curobjs++;
 	tctx->cnts.curobjs_shifted_unbiased += shifted_unbiased_cnt;
@@ -209,7 +221,11 @@ prof_malloc_sample_object(
 		prof_stats_inc(tsd, szind, size);
 	}
 
+emit_usdt:
 	JE_USDT(otel_memory, alloc, 3, ptr, (uint64_t)size, weighted_size);
+	if (prof_tctx_is_usdt(tctx)) {
+		return;
+	}
 
 	/* Sample hook. */
 	prof_sample_hook_t prof_sample_hook = prof_sample_hook_get();
@@ -394,6 +410,20 @@ te_base_cb_t prof_sample_te_handler = {
     .event_handler = &prof_sample_event_handler,
 };
 
+static bool
+prof_usdt_only_dump_warning(void) {
+	if (!opt_prof_usdt_only) {
+		return false;
+	}
+	if (!atomic_exchange_b(
+	        &prof_usdt_only_dump_warned, true, ATOMIC_RELAXED)) {
+		malloc_write("<jemalloc>: Heap profile unavailable because "
+		             "prof_usdt_only:true disables internal stack "
+		             "collection\n");
+	}
+	return true;
+}
+
 static void
 prof_fdump(void) {
 	tsd_t *tsd;
@@ -402,6 +432,9 @@ prof_fdump(void) {
 	assert(opt_prof_final);
 
 	if (!prof_booted) {
+		return;
+	}
+	if (prof_usdt_only_dump_warning()) {
 		return;
 	}
 	tsd = tsd_fetch();
@@ -425,6 +458,9 @@ prof_idump(tsdn_t *tsdn) {
 	cassert(config_prof);
 
 	if (!prof_booted || tsdn_null(tsdn) || !prof_active_get_unlocked()) {
+		return;
+	}
+	if (prof_usdt_only_dump_warning()) {
 		return;
 	}
 	tsd = tsdn_tsd(tsdn);
@@ -452,6 +488,9 @@ prof_mdump(tsd_t *tsd, const char *filename) {
 	if (!opt_prof || !prof_booted) {
 		return true;
 	}
+	if (prof_usdt_only_dump_warning()) {
+		return true;
+	}
 
 	return prof_mdump_impl(tsd, filename);
 }
@@ -464,6 +503,9 @@ prof_gdump(tsdn_t *tsdn) {
 	cassert(config_prof);
 
 	if (!prof_booted || tsdn_null(tsdn) || !prof_active_get_unlocked()) {
+		return;
+	}
+	if (prof_usdt_only_dump_warning()) {
 		return;
 	}
 	tsd = tsdn_tsd(tsdn);

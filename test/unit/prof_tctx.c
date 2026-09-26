@@ -42,7 +42,27 @@ TEST_BEGIN(test_prof_realloc) {
 }
 TEST_END
 
+TEST_BEGIN(test_prof_usdt_only) {
+	test_skip_if(!config_prof);
+
+	size_t bt_count = prof_bt_count();
+	opt_prof_usdt_only = true;
+
+	void *p = mallocx(1024, MALLOCX_TCACHE_NONE);
+	expect_ptr_not_null(p, "Unexpected mallocx() failure");
+	prof_info_t prof_info;
+	prof_info_get(tsd_fetch(), p, NULL, &prof_info);
+	expect_ptr_eq(prof_info.alloc_tctx, PROF_TCTX_USDT,
+	    "Expected a USDT-only sample marker");
+	expect_zu_eq(prof_bt_count(), bt_count,
+	    "USDT-only sampling should not collect a backtrace");
+
+	dallocx(p, MALLOCX_TCACHE_NONE);
+	opt_prof_usdt_only = false;
+}
+TEST_END
+
 int
 main(void) {
-	return test_no_reentrancy(test_prof_realloc);
+	return test_no_reentrancy(test_prof_realloc, test_prof_usdt_only);
 }

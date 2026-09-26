@@ -957,6 +957,11 @@ malloc_conf_init_helper(sc_data_t *sc_data, unsigned bin_shard_sizes[SC_NBINS],
 			}
 			if (config_prof) {
 				CONF_HANDLE_BOOL(opt_prof, "prof")
+#if defined(JEMALLOC_EXPERIMENTAL_USDT_STAP) || \
+    defined(JEMALLOC_EXPERIMENTAL_USDT_CUSTOM)
+				CONF_HANDLE_BOOL(
+				    opt_prof_usdt_only, "prof_usdt_only")
+#endif
 				CONF_HANDLE_CHAR_P(
 				    opt_prof_prefix, "prof_prefix", "jeprof")
 				CONF_HANDLE_BOOL(opt_prof_active, "prof_active")

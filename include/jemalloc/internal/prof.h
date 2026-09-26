@@ -105,6 +105,8 @@ typedef struct prof_recent_s prof_recent_t;
 
 /* NOLINTNEXTLINE(performance-no-int-to-ptr) */
 #define PROF_TCTX_SENTINEL ((prof_tctx_t *)((uintptr_t)1U))
+/* NOLINTNEXTLINE(performance-no-int-to-ptr) */
+#define PROF_TCTX_USDT ((prof_tctx_t *)((uintptr_t)2U))
 
 /******************************************************************************/
 /* STRUCTS */
@@ -327,6 +329,7 @@ struct prof_recent_s {
 
 extern bool     opt_prof;
 extern bool     opt_prof_active;
+extern bool     opt_prof_usdt_only;
 extern bool     opt_prof_thread_active_init;
 extern unsigned opt_prof_bt_max;
 extern size_t   opt_lg_prof_sample; /* Mean bytes between samples. */

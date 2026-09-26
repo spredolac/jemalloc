@@ -1458,6 +1458,29 @@ malloc_conf = "xmalloc:true";]]></programlisting>
         FORMAT</link> for heap profile format documentation.</para></listitem>
       </varlistentry>
 
+      <varlistentry id="opt.prof_usdt_only">
+        <term>
+          <mallctl>opt.prof_usdt_only</mallctl>
+          (<type>bool</type>)
+          <literal>r-</literal>
+          [<option>--enable-prof</option> and
+          <option>--enable-experimental-sdt</option>]
+        </term>
+        <listitem><para>If true, profiling samples emit static tracepoint
+        events without collecting backtraces or aggregating samples inside
+        jemalloc.  The <link
+        linkend="opt.prof_active"><mallctl>opt.prof_active</mallctl></link>,
+        <link
+        linkend="thread.prof.active"><mallctl>thread.prof.active</mallctl></link>,
+        and <link
+        linkend="opt.lg_prof_sample"><mallctl>opt.lg_prof_sample</mallctl></link>
+        controls continue to apply.  Samples are not added to profiling
+        statistics, recent-allocation records, or profiling logs, and the
+        experimental sample hooks are not invoked.  Heap profile dumps are
+        unavailable in this mode and dump requests produce a diagnostic
+        message.  This option is disabled by default.</para></listitem>
+      </varlistentry>
+
       <varlistentry id="opt.prof_prefix">
         <term>
           <mallctl>opt.prof_prefix</mallctl>
