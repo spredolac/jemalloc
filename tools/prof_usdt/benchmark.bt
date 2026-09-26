@@ -1,0 +1,79 @@
+#!/usr/bin/env bpftrace
+
+/*
+ * Perform the same stack collection and aggregation as profile.bt without
+ * printing the profile maps.  This is useful for measuring collection cost;
+ * use profile.bt when output analogous to prof.dump is wanted.
+ *
+ * Build the traced application and relevant libraries with
+ * -fno-omit-frame-pointer so ustack(perf, 32) can unwind them reliably.
+ *
+ * Build jemalloc with --enable-prof --enable-experimental-sdt, then run:
+ *
+ *   sudo env BPFTRACE_MAX_MAP_KEYS=262144 bpftrace -q \
+ *     -o usdt-summary.txt \
+ *     -c 'env MALLOC_CONF=prof:true,prof_usdt_only:true \
+ *       LD_PRELOAD=/path/to/libjemalloc.so /path/to/application' \
+ *     tools/prof_usdt/benchmark.bt /path/to/libjemalloc.so
+ *
+ * The output reports event totals and unmatched frees.  A successful run has
+ * no unmatched frees.  The free count may be lower when sampled objects are
+ * still live at process exit.
+ */
+
+BEGIN
+{
+	printf("READY\n");
+	/* Keep the map readable in END even if no unmatched free occurs. */
+	@unmatched_frees = count();
+}
+
+usdt:$1:otel_memory:alloc
+{
+	$stack = ustack(perf, 32);
+	$objects = arg1 == 0 ? 0 : arg2 / arg1;
+
+	@alloc_events = count();
+	@alloc_space[$stack] += arg2;
+	@alloc_objects[$stack] += $objects;
+	@inuse_space[$stack] += arg2;
+	@inuse_objects[$stack] += $objects;
+	@live_stack[pid, arg0] = $stack;
+	@live_space[pid, arg0] = arg2;
+	@live_objects[pid, arg0] = $objects;
+	@live_present[pid, arg0] = 1;
+}
+
+usdt:$1:otel_memory:free
+{
+	@free_events = count();
+	if (@live_present[pid, arg0]) {
+		$stack = @live_stack[pid, arg0];
+		@inuse_space[$stack] -= @live_space[pid, arg0];
+		@inuse_objects[$stack] -= @live_objects[pid, arg0];
+		$deleted = delete(@live_stack[pid, arg0]);
+		$deleted = delete(@live_space[pid, arg0]);
+		$deleted = delete(@live_objects[pid, arg0]);
+		$deleted = delete(@live_present[pid, arg0]);
+	} else {
+		@unmatched_frees = count();
+	}
+}
+
+END
+{
+	printf("SUMMARY alloc=%llu free=%llu unmatched_free=%llu\n",
+	    (uint64)@alloc_events, (uint64)@free_events,
+	    (uint64)((int64)@unmatched_frees - 1));
+	clear(@alloc_events);
+	clear(@free_events);
+	clear(@unmatched_frees);
+	clear(@alloc_space);
+	clear(@alloc_objects);
+	clear(@inuse_space);
+	clear(@inuse_objects);
+	clear(@live_stack);
+	clear(@live_space);
+	clear(@live_objects);
+	clear(@live_present);
+}

@@ -1,0 +1,79 @@
+#!/usr/bin/env bpftrace
+
+/*
+ * These reports are similar to the four aggregate views that jeprof can read
+ * from a prof.dump heap profile:
+ *
+ *   ALLOC_SPACE    -- weighted bytes allocated, grouped by stack
+ *   ALLOC_OBJECTS  -- weighted allocation count, grouped by stack
+ *   INUSE_SPACE    -- weighted bytes still live, grouped by stack
+ *   INUSE_OBJECTS  -- weighted live object count, grouped by stack
+ *
+ * Build the traced application and relevant libraries with
+ * -fno-omit-frame-pointer so ustack(perf, 32) can unwind them reliably.
+ *
+ * Build jemalloc with --enable-prof --enable-experimental-sdt, then run:
+ *
+ *   sudo env BPFTRACE_MAX_MAP_KEYS=262144 bpftrace -q \
+ *     -o usdt-profile.txt \
+ *     -c 'env MALLOC_CONF=prof:true,prof_usdt_only:true \
+ *       LD_PRELOAD=/path/to/libjemalloc.so /path/to/application' \
+ *     tools/prof_usdt/profile.bt /path/to/libjemalloc.so
+ *
+ * bpftrace prints the four maps when the traced process exits.  arg0 is the
+ * allocation address, arg1 is its requested size, and arg2 is its weighted
+ * requested size.  Object counts are estimated as arg2 / arg1.
+ */
+
+BEGIN
+{
+	printf("READY\n");
+}
+
+usdt:$1:otel_memory:alloc
+{
+	$stack = ustack(perf, 32);
+	$objects = arg1 == 0 ? 0 : arg2 / arg1;
+
+	@alloc_space[$stack] += arg2;
+	@alloc_objects[$stack] += $objects;
+	@inuse_space[$stack] += arg2;
+	@inuse_objects[$stack] += $objects;
+
+	@live_stack[pid, arg0] = $stack;
+	@live_space[pid, arg0] = arg2;
+	@live_objects[pid, arg0] = $objects;
+	@live_present[pid, arg0] = 1;
+}
+
+usdt:$1:otel_memory:free
+/@live_present[pid, arg0]/
+{
+	$stack = @live_stack[pid, arg0];
+	@inuse_space[$stack] -= @live_space[pid, arg0];
+	@inuse_objects[$stack] -= @live_objects[pid, arg0];
+	$deleted = delete(@live_stack[pid, arg0]);
+	$deleted = delete(@live_space[pid, arg0]);
+	$deleted = delete(@live_objects[pid, arg0]);
+	$deleted = delete(@live_present[pid, arg0]);
+}
+
+END
+{
+	printf("ALLOC_SPACE\n");
+	print(@alloc_space);
+	printf("ALLOC_OBJECTS\n");
+	print(@alloc_objects);
+	printf("INUSE_SPACE\n");
+	print(@inuse_space);
+	printf("INUSE_OBJECTS\n");
+	print(@inuse_objects);
+	clear(@alloc_space);
+	clear(@alloc_objects);
+	clear(@inuse_space);
+	clear(@inuse_objects);
+	clear(@live_stack);
+	clear(@live_space);
+	clear(@live_objects);
+	clear(@live_present);
+}
