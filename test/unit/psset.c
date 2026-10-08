@@ -142,6 +142,39 @@ TEST_BEGIN(test_empty) {
 }
 TEST_END
 
+TEST_BEGIN(test_retain_alloc_container) {
+	test_skip_if(hpa_hugepage_size_exceeds_limit());
+
+	psset_t psset;
+	psset_init(&psset);
+	hpdata_t pageslab;
+	hpdata_init(
+	    &pageslab, PAGESLAB_ADDR, PAGESLAB_AGE, /* is_huge */ false);
+	psset_insert(&psset, &pageslab);
+
+	psset_update_t update;
+	psset_update_begin_retain(&psset, &pageslab, &update);
+	hpdata_reserve_alloc(&pageslab, PAGE);
+	psset_update_end_retain(&psset, &pageslab, &update);
+	expect_false(update.alloc_container_kept,
+	    "An empty pageslab uses a different allocation container");
+
+	psset_update_begin_retain(&psset, &pageslab, &update);
+	hpdata_reserve_alloc(&pageslab, PAGE);
+	psset_update_end_retain(&psset, &pageslab, &update);
+	expect_true(update.alloc_container_kept,
+	    "An unchanged heap should retain its allocation entry");
+
+	psset_update_begin_retain(&psset, &pageslab, &update);
+	hpdata_reserve_alloc(&pageslab, HUGEPAGE / 2);
+	psset_update_end_retain(&psset, &pageslab, &update);
+	expect_false(update.alloc_container_kept,
+	    "A changed heap should move its allocation entry");
+	expect_ptr_eq(&pageslab, psset_pick_alloc(&psset, PAGE),
+	    "Pageslab missing after moving allocation heaps");
+}
+TEST_END
+
 TEST_BEGIN(test_fill) {
 	test_skip_if(hpa_hugepage_size_exceeds_limit());
 	bool err;
@@ -956,6 +989,7 @@ main(void) {
 	return test_no_reentrancy(test_empty, test_fill, test_reuse, test_evict,
 	    test_multi_pageslab, test_stats_merged, test_stats_huge,
 	    test_stats_fullness, test_oldest_fit, test_insert_remove,
+	    test_retain_alloc_container,
 	    test_purge_prefers_nonhuge, test_purge_prefers_empty,
 	    test_purge_prefers_empty_huge);
 }

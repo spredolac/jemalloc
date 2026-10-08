@@ -109,6 +109,13 @@ struct psset_s {
 	hpdata_hugify_list_t to_hugify;
 };
 
+typedef struct psset_update_s psset_update_t;
+struct psset_update_s {
+	bool alloc_container_kept;
+	size_t alloc_container_ind;
+	uint64_t age;
+};
+
 void psset_init(psset_t *psset);
 void psset_stats_accum(psset_stats_t *dst, psset_stats_t *src);
 
@@ -118,6 +125,16 @@ void psset_stats_accum(psset_stats_t *dst, psset_stats_t *src);
  */
 void psset_update_begin(psset_t *psset, hpdata_t *ps);
 void psset_update_end(psset_t *psset, hpdata_t *ps);
+
+/*
+ * As above, but avoid removing and reinserting a nonempty allocation
+ * candidate if its heap and ordering key do not change.  The caller must
+ * prevent allocation lookups until the update ends.
+ */
+void psset_update_begin_retain(psset_t *psset, hpdata_t *ps,
+    psset_update_t *update);
+void psset_update_end_retain(psset_t *psset, hpdata_t *ps,
+    psset_update_t *update);
 
 /* Analogous to the eset_fit; pick a hpdata to serve the request. */
 hpdata_t *psset_pick_alloc(psset_t *psset, size_t size);
