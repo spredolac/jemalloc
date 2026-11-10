@@ -12,9 +12,9 @@
 /*
  * Small extent cache.
  *
- * This includes some utilities to cache small extents.  We have a per-pszind
- * bin with its own list of extents of that size.  We don't try to do any
- * coalescing of extents (since it would in general require cross-shard locks or
+ * This includes some utilities to cache small extents.  We have a bin for each
+ * exact page-multiple size, with its own list of extents of that size.  We don't
+ * try to coalesce extents (since it would in general require cross-shard locks or
  * knowledge of the underlying PAI implementation).
  */
 
@@ -93,6 +93,8 @@ typedef struct sec_s sec_t;
 struct sec_s {
 	sec_opts_t opts;
 	sec_bin_t *bins;
+
+	/* Number of exact page-multiple sizes per shard, not stats buckets. */
 	pszind_t   npsizes;
 };
 

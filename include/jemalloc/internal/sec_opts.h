@@ -31,6 +31,11 @@ struct sec_opts_s {
 	bool experimental_trim;
 };
 
+/* Support 64 KiB extents and preserve any larger existing limit. */
+#define SEC_MAX_ALLOC                                                          \
+	((64 * 1024) < USIZE_GROW_SLOW_THRESHOLD ? USIZE_GROW_SLOW_THRESHOLD   \
+	                                         : (64 * 1024))
+
 #define SEC_OPTS_NSHARDS_DEFAULT 2
 #define SEC_OPTS_MAX_ALLOC_DEFAULT                                             \
 	((32 * 1024) < PAGE ? PAGE : (32 * 1024))

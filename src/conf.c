@@ -928,9 +928,8 @@ malloc_conf_init_helper(sc_data_t *sc_data,
 			    "hpa_sec_nshards", 0, 255, CONF_CHECK_MIN,
 			    CONF_CHECK_MAX, true);
 			CONF_HANDLE_SIZE_T(opt_hpa_sec_opts.max_alloc,
-			    "hpa_sec_max_alloc", PAGE,
-			    USIZE_GROW_SLOW_THRESHOLD, CONF_CHECK_MIN,
-			    CONF_CHECK_MAX, true);
+			    "hpa_sec_max_alloc", PAGE, SEC_MAX_ALLOC,
+			    CONF_CHECK_MIN, CONF_CHECK_MAX, true);
 			CONF_HANDLE_SIZE_T(opt_hpa_sec_opts.max_bytes,
 			    "hpa_sec_max_bytes", SEC_OPTS_MAX_BYTES_DEFAULT, 0,
 			    CONF_CHECK_MIN, CONF_DONT_CHECK_MAX, true);

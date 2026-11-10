@@ -68,6 +68,16 @@ sec_test_dalloc(tsdn_t *tsdn, sec_t *sec,
 	sec_dalloc(tsdn, sec, dalloc_list, test_sec_shard(tsdn, sec));
 }
 
+TEST_BEGIN(test_sec_max_alloc_option) {
+	size_t max_alloc;
+	size_t sz = sizeof(max_alloc);
+	expect_d_eq(
+	    mallctl("opt.hpa_sec_max_alloc", &max_alloc, &sz, NULL, 0), 0, "");
+	expect_zu_eq(max_alloc, max_zu(64 * 1024, PAGE),
+	    "Opt-in cutoff must not be clamped to the old limit");
+}
+TEST_END
+
 TEST_BEGIN(test_max_nshards_option_zero) {
 	test_data_t tdata;
 	sec_opts_t  opts = {0};
@@ -446,6 +456,83 @@ TEST_BEGIN(test_sec_stats) {
 }
 TEST_END
 
+static void
+test_sec_large_impl(size_t max_alloc) {
+	tsdn_t     *tsdn = tsd_tsdn(tsd_fetch());
+	test_data_t tdata;
+	sec_opts_t  opts = HPA_SEC_OPTS_DEFAULT;
+	opts.nshards = 2;
+	opts.max_alloc = max_alloc;
+	opts.max_bytes = 4 * max_alloc;
+	test_data_init(tsdn, &tdata, &opts);
+
+	/* Adjacent page sizes can share a geometric stats bucket, not a bin. */
+	const size_t        sizes[] = {max_alloc - PAGE, max_alloc};
+	edata_t             edatas[2];
+	edata_list_active_t list;
+	edata_list_active_init(&list);
+	for (unsigned i = 0; i < 2; i++) {
+		edata_init_test_size(&edatas[i], sizes[i]);
+		edata_pinned_set(&edatas[i], i == 0);
+		edata_list_active_append(&list, &edatas[i]);
+		sec_fill(tsdn, &tdata.sec, sizes[i], &list, 1, 0);
+		assert_true(edata_list_active_empty(&list), "Extent cached");
+	}
+	for (pszind_t pind = sz_psz2ind(sizes[0]); pind <= sz_psz2ind(sizes[1]);
+	    pind++) {
+		sec_pszind_stats_t stats = {0}, expected = {0};
+		for (unsigned i = 0; i < 2; i++) {
+			if (sz_psz2ind(sizes[i]) == pind) {
+				expected.bytes += sizes[i];
+				expected.nextents++;
+				if (i == 0) {
+					expected.bytes_pinned += sizes[i];
+					expected.nextents_pinned++;
+				}
+			}
+		}
+		sec_stats_merge_pszind(tsdn, &tdata.sec, pind, &stats);
+		expect_zu_eq(stats.bytes, expected.bytes, "Bucket bytes");
+		expect_zu_eq(
+		    stats.nextents, expected.nextents, "Exact extent count");
+		expect_zu_eq(
+		    stats.bytes_pinned, expected.bytes_pinned, "Pinned bytes");
+		expect_zu_eq(stats.nextents_pinned, expected.nextents_pinned,
+		    "Pinned extent count");
+	}
+	for (unsigned i = 0; i < 2; i++) {
+		edata_t *edata = sec_alloc(tsdn, &tdata.sec, sizes[i], 1);
+		assert_ptr_eq(
+		    edata, &edatas[i], "Exact-size reuse from another shard");
+		expect_zu_eq(edata_size_get(edata), sizes[i], "Extent size");
+		edata_list_active_append(&list, edata);
+		sec_dalloc(tsdn, &tdata.sec, &list, 1);
+		assert_true(
+		    edata_list_active_empty(&list), "Extent returned to SEC");
+	}
+	sec_flush(tsdn, &tdata.sec, &list);
+	size_t   nreturned = 0;
+	edata_t *edata;
+	while ((edata = edata_list_active_first(&list)) != NULL) {
+		edata_list_active_remove(&list, edata);
+		nreturned++;
+	}
+	expect_zu_eq(nreturned, 2, "Flush includes the last bin");
+	sec_stats_t stats = {0};
+	sec_stats_merge(tsdn, &tdata.sec, &stats);
+	expect_zu_eq(stats.bytes, 0, "SEC drained");
+	expect_zu_eq(stats.bytes_pinned, 0, "Pinned inventory drained");
+	expect_false(sec_size_supported(&tdata.sec, max_alloc + PAGE),
+	    "Extents above the cutoff bypass SEC");
+	destroy_test_data(tsdn, &tdata);
+}
+
+TEST_BEGIN(test_sec_large) {
+	test_sec_large_impl(SEC_MAX_ALLOC);
+	test_sec_large_impl(SEC_MAX_ALLOC - PAGE);
+}
+TEST_END
+
 #define NOPS_PER_THREAD 100
 #define NPREFILL 32
 
@@ -716,10 +803,9 @@ TEST_BEGIN(test_sec_trim_low_water) {
 }
 TEST_END
 
-TEST_BEGIN(test_sec_trim_half_low_water_rounding) {
+static void
+test_sec_trim_half_low_water_rounding_impl(size_t size) {
 	tsdn_t *tsdn = tsd_tsdn(tsd_fetch());
-	/* Include a multi-page extent whose half is not a whole extent. */
-	const size_t size = 3 * PAGE;
 	for (size_t n = 2; n <= 6; n += 2) {
 		test_data_t tdata;
 		sec_opts_t opts = {1, size, 8 * size, true};
@@ -754,7 +840,7 @@ TEST_BEGIN(test_sec_trim_half_low_water_rounding) {
 		expect_zu_eq(stats.bytes, (n - nreturned) * size, "Reserve retained");
 		expect_zu_eq(stats.bytes_pinned, ((n - nreturned + 1) / 2) * size,
 		    "Pinned accounting includes retained reserve");
-		sec_bin_t *bin = &tdata.sec.bins[sz_psz2ind(size)];
+		sec_bin_t *bin = &tdata.sec.bins[(size >> LG_PAGE) - 1];
 		expect_zu_eq(bin->low_water_bytes, stats.bytes, "Reset to retained bytes");
 		for (size_t remaining = n - nreturned; remaining > 0;) {
 			sec_trim(tsdn, &tdata.sec, &list);
@@ -768,6 +854,11 @@ TEST_BEGIN(test_sec_trim_half_low_water_rounding) {
 		}
 		destroy_test_data(tsdn, &tdata);
 	}
+}
+
+TEST_BEGIN(test_sec_trim_half_low_water_rounding) {
+	test_sec_trim_half_low_water_rounding_impl(3 * PAGE);
+	test_sec_trim_half_low_water_rounding_impl(SEC_MAX_ALLOC - PAGE);
 }
 TEST_END
 
@@ -940,13 +1031,12 @@ TEST_END
 
 int
 main(void) {
-	return test(test_max_nshards_option_zero,
+	return test(test_sec_max_alloc_option, test_max_nshards_option_zero,
 	    test_max_alloc_option_too_small, test_sec_fill, test_sec_alloc,
 	    test_sec_dalloc, test_sec_pinned_stats, test_max_bytes_too_low,
-	    test_sec_flush, test_sec_stats, test_sec_multishard,
+	    test_sec_flush, test_sec_stats, test_sec_large, test_sec_multishard,
 	    test_sec_trim_disabled, test_sec_trim_overflow,
-	    test_sec_trim_low_water,
-	    test_sec_trim_half_low_water_rounding,
+	    test_sec_trim_low_water, test_sec_trim_half_low_water_rounding,
 	    test_sec_trim_return_only_and_flush, test_sec_trim_contended_bin,
 	    test_sec_concurrent_trim_fill);
 }

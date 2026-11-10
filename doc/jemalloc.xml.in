@@ -1136,6 +1136,22 @@ mallctl("arena." STRINGIFY(MALLCTL_ARENAS_ALL) ".decay",
         not within large size classes disables this feature.</para></listitem>
       </varlistentry>
 
+      <varlistentry id="opt.hpa_sec_max_alloc">
+        <term>
+          <mallctl>opt.hpa_sec_max_alloc</mallctl>
+          (<type>size_t</type>)
+          <literal>r-</literal>
+        </term>
+        <listitem><para>Maximum extent size cached by the Huge Page Allocator's
+        small extent cache.  The default is 32KiB, or the page size if larger.
+        The upper limit is at least 64KiB; larger limits implied by the page size
+        and size class settings are preserved.  HPA admission is configured
+        separately.  This limit applies to the backing extent, including any
+        cache-oblivious padding, rather
+        than the usable allocation size.  Increasing it can increase cached
+        memory.</para></listitem>
+      </varlistentry>
+
       <varlistentry id="opt.percpu_arena">
         <term>
           <mallctl>opt.percpu_arena</mallctl>

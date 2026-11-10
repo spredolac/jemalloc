@@ -39,15 +39,10 @@ sec_init(tsdn_t *tsdn, sec_t *sec, base_t *base, const sec_opts_t *opts) {
 	assert(opts->nshards <= 255);
 	assert(opts->max_alloc >= PAGE);
 
-	/*
-	 * Same as tcache, sec do not cache allocs/dallocs larger than
-	 * USIZE_GROW_SLOW_THRESHOLD because the usize above this increases
-	 * by PAGE and the number of usizes is too large.
-	 */
-	assert(opts->max_alloc <= USIZE_GROW_SLOW_THRESHOLD);
+	assert(opts->max_alloc <= SEC_MAX_ALLOC);
 
 	size_t   max_alloc = PAGE_FLOOR(opts->max_alloc);
-	pszind_t npsizes = sz_psz2ind(max_alloc) + 1;
+	pszind_t npsizes = (pszind_t)(max_alloc >> LG_PAGE);
 
 	size_t ntotal_bins = opts->nshards * (size_t)npsizes;
 	size_t sz_bins = sizeof(sec_bin_t) * ntotal_bins;
@@ -100,9 +95,16 @@ sec_shard_pick(tsd_t *tsd, sec_t *sec, uint8_t *idxp) {
 static sec_bin_t *
 sec_bin_pick(sec_t *sec, uint8_t shard, pszind_t pszind) {
 	assert(shard < sec->opts.nshards);
+	assert(pszind < sec->npsizes);
 	size_t ind = (size_t)shard * sec->npsizes + pszind;
 	assert(ind < sec->npsizes * sec->opts.nshards);
 	return &sec->bins[ind];
+}
+
+static pszind_t
+sec_size2ind(size_t size) {
+	assert(size >= PAGE && (size & PAGE_MASK) == 0);
+	return (pszind_t)(size >> LG_PAGE) - 1;
 }
 
 void
@@ -143,6 +145,7 @@ sec_bin_alloc_locked(tsdn_t *tsdn, sec_t *sec, sec_bin_t *bin, size_t size) {
 		assert(!edata_list_active_empty(&bin->freelist));
 		edata_list_active_remove(&bin->freelist, edata);
 		size_t sz = edata_size_get(edata);
+		assert(sz == size);
 		size_t bytes_cur = atomic_load_zu(&bin->bytes_cur, ATOMIC_RELAXED);
 		assert(sz <= bytes_cur && sz > 0);
 		bytes_cur -= sz;
@@ -206,7 +209,7 @@ edata_t *
 sec_alloc(tsdn_t *tsdn, sec_t *sec, size_t size, uint8_t shard) {
 	assert(sec_size_supported(sec, size));
 	assert((size & PAGE_MASK) == 0);
-	pszind_t pszind = sz_psz2ind(size);
+	pszind_t pszind = sec_size2ind(size);
 	assert(pszind < sec->npsizes);
 
 	/*
@@ -310,7 +313,7 @@ sec_dalloc(tsdn_t *tsdn, sec_t *sec, edata_list_active_t *dalloc_list,
 	edata_t *edata = edata_list_active_first(dalloc_list);
 	size_t   size = edata_size_get(edata);
 	assert(sec_size_supported(sec, size));
-	pszind_t pszind = sz_psz2ind(size);
+	pszind_t pszind = sec_size2ind(size);
 	assert(pszind < sec->npsizes);
 
 	/*
@@ -348,7 +351,7 @@ sec_fill(tsdn_t *tsdn, sec_t *sec, size_t size, edata_list_active_t *result,
 	assert(sec_size_supported(sec, size));
 	assert(nallocs > 0);
 
-	pszind_t pszind = sz_psz2ind(size);
+	pszind_t pszind = sec_size2ind(size);
 	assert(pszind < sec->npsizes);
 
 	sec_bin_t *bin = sec_bin_pick(sec, shard, pszind);
@@ -456,14 +459,13 @@ sec_bin_bytes_get(const sec_bin_t *bin, size_t *bytes, size_t *bytes_pinned) {
 
 static void
 sec_stats_merge_bin(
-    const sec_bin_t *bin, pszind_t pszind, sec_pszind_stats_t *stats) {
+    const sec_bin_t *bin, size_t size, sec_pszind_stats_t *stats) {
 	size_t bytes;
 	size_t bytes_pinned;
 	sec_bin_bytes_get(bin, &bytes, &bytes_pinned);
 
 	stats->bytes += bytes;
 	stats->bytes_pinned += bytes_pinned;
-	size_t size = sz_pind2sz(pszind);
 	stats->nextents += bytes / size;
 	stats->nextents_pinned += bytes_pinned / size;
 }
@@ -497,14 +499,20 @@ sec_stats_merge(tsdn_t *tsdn, const sec_t *sec, sec_stats_t *stats) {
 void
 sec_stats_merge_pszind(tsdn_t *tsdn, const sec_t *sec, pszind_t pszind,
     sec_pszind_stats_t *stats) {
-	if (!sec_is_used(sec) || pszind >= sec->npsizes) {
+	if (!sec_is_used(sec) || pszind >= SC_NPSIZES) {
 		return;
 	}
 
-	for (size_t shard = 0; shard < sec->opts.nshards; shard++) {
-		size_t ind = shard * sec->npsizes + pszind;
-		assert(ind < sec->npsizes * sec->opts.nshards);
-		sec_stats_merge_bin(&sec->bins[ind], pszind, stats);
+	/* Preserve exported geometric buckets while counting exact extents. */
+	size_t first = pszind == 0 ? PAGE : sz_pind2sz(pszind - 1) + PAGE;
+	size_t last = min_zu(
+	    sz_pind2sz(pszind), (size_t)sec->npsizes << LG_PAGE);
+	for (size_t size = first; size <= last; size += PAGE) {
+		for (size_t shard = 0; shard < sec->opts.nshards; shard++) {
+			sec_bin_t *bin = sec_bin_pick(
+			    sec, shard, sec_size2ind(size));
+			sec_stats_merge_bin(bin, size, stats);
+		}
 	}
 }
 
