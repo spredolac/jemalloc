@@ -1,4 +1,5 @@
 #include "jemalloc/internal/jemalloc_preamble.h"
+#include "jemalloc/internal/shared_medium_cache.h"
 
 #include "jemalloc/internal/arena.h"
 #include "jemalloc/internal/arenas_management.h"
@@ -59,6 +60,7 @@ _malloc_prefork(void)
 	narenas = narenas_total_get();
 
 	witness_prefork(tsd_witness_tsdp_get(tsd));
+	shared_medium_cache_prefork(tsd);
 	/* Acquire all mutexes in a safe order. */
 	ctl_prefork(tsd_tsdn(tsd));
 	tcache_prefork(tsd_tsdn(tsd));
@@ -154,6 +156,7 @@ _malloc_postfork(void)
 	arenas_management_postfork_parent(tsd_tsdn(tsd));
 	tcache_postfork_parent(tsd_tsdn(tsd));
 	ctl_postfork_parent(tsd_tsdn(tsd));
+	shared_medium_cache_postfork_parent(tsd);
 }
 
 void
@@ -185,4 +188,5 @@ jemalloc_postfork_child(void) {
 	arenas_management_postfork_child(tsd_tsdn(tsd));
 	tcache_postfork_child(tsd_tsdn(tsd));
 	ctl_postfork_child(tsd_tsdn(tsd));
+	shared_medium_cache_postfork_child(tsd);
 }

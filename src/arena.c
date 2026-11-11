@@ -1,4 +1,5 @@
 #include "jemalloc/internal/jemalloc_preamble.h"
+#include "jemalloc/internal/shared_medium_cache.h"
 
 #include "jemalloc/internal/arena.h"
 #include "jemalloc/internal/arena_inlines.h"
@@ -1245,7 +1246,7 @@ JEMALLOC_ALWAYS_INLINE void
 #endif
 arena_ptr_array_flush_impl(tsd_t *tsd, szind_t binind,
     cache_bin_ptr_array_t *arr, unsigned nflush, bool small,
-    arena_t *stats_arena, cache_bin_stats_t **merge_stats) {
+    arena_t *stats_arena, cache_bin_stats_t **merge_stats, bool share_large) {
 	/*
 	 * A couple lookup calls take tsdn; declare it once for convenience
 	 * instead of calling tsd_tsdn(tsd) all the time.
@@ -1284,6 +1285,24 @@ arena_ptr_array_flush_impl(tsd_t *tsd, szind_t binind,
 		arena_ptr_array_flush_impl_small(tsdn, binind, arr,
 		    item_edata, nflush, stats_arena, merge_stats);
 	} else {
+		if (share_large) {
+			unsigned remaining = 0;
+			for (unsigned i = 0; i < nflush; i++) {
+				edata_t *edata = item_edata[i].edata;
+				void    *ptr = arr->ptr[i];
+				if (large_dalloc_safety_checks(
+				        edata, ptr, sz_index2size(binind))) {
+					continue;
+				}
+				if (shared_medium_cache_dalloc(
+				        tsd, edata, ptr)) {
+					continue;
+				}
+				arr->ptr[remaining] = ptr;
+				item_edata[remaining++] = item_edata[i];
+			}
+			nflush = remaining;
+		}
 		arena_ptr_array_flush_impl_large(tsdn, binind, arr,
 		    item_edata, nflush, stats_arena, merge_stats);
 	}
@@ -1294,10 +1313,10 @@ arena_ptr_array_flush_impl(tsd_t *tsd, szind_t binind,
  * so multiple arenas may be involved here. The input stats_arena simply
  * indicates where the cache stats should be merged into.
  */
-void
-arena_ptr_array_flush(tsd_t *tsd, szind_t binind, cache_bin_ptr_array_t *arr,
-    unsigned nflush, bool small, arena_t *stats_arena,
-    cache_bin_stats_t merge_stats) {
+static void
+arena_ptr_array_flush_common(tsd_t *tsd, szind_t binind,
+    cache_bin_ptr_array_t *arr, unsigned nflush, bool small,
+    arena_t *stats_arena, cache_bin_stats_t merge_stats, bool share_large) {
 	assert(arr != NULL && arr->ptr != NULL);
 	/*
      * The input cache bin stats represent a snapshot taken when the pointer
@@ -1318,7 +1337,7 @@ arena_ptr_array_flush(tsd_t *tsd, szind_t binind, cache_bin_ptr_array_t *arr,
 		(&ptrs_batch)->n = (cache_bin_sz_t)nflush_batch;
 		(&ptrs_batch)->ptr = arr->ptr + nflushed;
 		arena_ptr_array_flush_impl(tsd, binind, &ptrs_batch,
-		    nflush_batch, small, stats_arena, &stats);
+		    nflush_batch, small, stats_arena, &stats, share_large);
 		nflushed += nflush_batch;
 	} while (nflushed < nflush);
 	assert(nflush == nflushed);
@@ -1326,6 +1345,23 @@ arena_ptr_array_flush(tsd_t *tsd, szind_t binind, cache_bin_ptr_array_t *arr,
 	if (config_stats) {
 		assert(stats == NULL);
 	}
+}
+
+void
+arena_ptr_array_flush(tsd_t *tsd, szind_t binind, cache_bin_ptr_array_t *arr,
+    unsigned nflush, bool small, arena_t *stats_arena,
+    cache_bin_stats_t stats) {
+	arena_ptr_array_flush_common(
+	    tsd, binind, arr, nflush, small, stats_arena, stats, false);
+}
+
+void
+arena_ptr_array_share_large(tsd_t *tsd, szind_t binind,
+    cache_bin_ptr_array_t *arr, unsigned nflush, arena_t *stats_arena,
+    cache_bin_stats_t stats) {
+	assert(binind >= SC_NBINS && shared_medium_cache_active);
+	arena_ptr_array_flush_common(
+	    tsd, binind, arr, nflush, false, stats_arena, stats, true);
 }
 
 bool

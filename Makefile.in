@@ -160,6 +160,7 @@ C_SRCS := $(srcroot)src/jemalloc.c \
 	$(srcroot)src/rtree.c \
 	$(srcroot)src/safety_check.c \
 	$(srcroot)src/sc.c \
+	$(srcroot)src/shared_medium_cache.c \
 	$(srcroot)src/sec.c \
 	$(srcroot)src/stats.c \
 	$(srcroot)src/sz.c \
@@ -312,6 +313,8 @@ TESTS_UNIT := \
 	$(srcroot)test/unit/safety_check.c \
 	$(srcroot)test/unit/sc.c \
 	$(srcroot)test/unit/sec.c \
+	$(srcroot)test/unit/shared_medium_cache.c \
+	$(srcroot)test/unit/shared_medium_cache_prof.c \
 	$(srcroot)test/unit/SFMT.c \
 	$(srcroot)test/unit/size_check.c \
 	$(srcroot)test/unit/size_classes.c \

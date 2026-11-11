@@ -1,4 +1,5 @@
 #include "jemalloc/internal/jemalloc_preamble.h"
+#include "jemalloc/internal/shared_medium_cache.h"
 
 #include "jemalloc/internal/arena.h"
 #include "jemalloc/internal/arenas_management.h"
@@ -562,6 +563,9 @@ malloc_init_hard(void) {
 	}
 
 	malloc_init_percpu();
+	if (shared_medium_cache_boot(tsd_tsdn(tsd))) {
+		UNLOCK_RETURN(tsd_tsdn(tsd), true, true)
+	}
 
 	if (malloc_init_hard_finish()) {
 		UNLOCK_RETURN(tsd_tsdn(tsd), true, true)

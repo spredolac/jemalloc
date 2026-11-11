@@ -1,4 +1,5 @@
 #include "jemalloc/internal/jemalloc_preamble.h"
+#include "jemalloc/internal/shared_medium_cache.h"
 
 #include "jemalloc/internal/arena.h"
 #include "jemalloc/internal/arena_inlines.h"
@@ -480,8 +481,15 @@ tcache_bin_flush_bottom(tsd_t *tsd, tcache_t *tcache, cache_bin_t *cache_bin,
 	CACHE_BIN_PTR_ARRAY_DECLARE(ptrs, nflush);
 	cache_bin_init_ptr_array_for_flush(cache_bin, &ptrs, nflush);
 
-	arena_ptr_array_flush(tsd, binind, &ptrs, nflush, small,
-	    tcache->tcache_slow->arena, cache_bin->tstats);
+	if (!small
+	    && shared_medium_cache_eligible(
+	        tsd_tsdn(tsd), tcache, sz_index2size(binind))) {
+		arena_ptr_array_share_large(tsd, binind, &ptrs, nflush,
+		    tcache->tcache_slow->arena, cache_bin->tstats);
+	} else {
+		arena_ptr_array_flush(tsd, binind, &ptrs, nflush, small,
+		    tcache->tcache_slow->arena, cache_bin->tstats);
+	}
 
 	cache_bin_finish_flush(cache_bin, &ptrs, nflush);
 }

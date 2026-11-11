@@ -1,4 +1,5 @@
 #include "jemalloc/internal/jemalloc_preamble.h"
+#include "jemalloc/internal/shared_medium_cache.h"
 
 #include "jemalloc/internal/arena.h"
 #include "jemalloc/internal/assert.h"
@@ -556,6 +557,21 @@ malloc_conf_init_helper(sc_data_t *sc_data,
 			bool cur_opt_valid = true;
 
 			CONF_HANDLE_BOOL(opt_confirm_conf, "confirm_conf")
+			CONF_HANDLE_BOOL(opt_experimental_shared_cache,
+			    "experimental_shared_cache")
+			CONF_HANDLE_SIZE_T(
+			    opt_experimental_shared_cache_arena_group,
+			    "experimental_shared_cache_arena_group", 1, 4096,
+			    CONF_CHECK_MIN, CONF_CHECK_MAX, true);
+			CONF_HANDLE_SIZE_T(
+			    opt_experimental_shared_cache_group_max_bytes,
+			    "experimental_shared_cache_group_max_bytes", 0,
+			    128 * 1024 * 1024, CONF_CHECK_MIN, CONF_CHECK_MAX,
+			    true);
+			CONF_HANDLE_SIZE_T(
+			    opt_experimental_shared_cache_idle_sec,
+			    "experimental_shared_cache_idle_sec", 1, 3600,
+			    CONF_CHECK_MIN, CONF_CHECK_MAX, true);
 			CONF_HANDLE_BOOL(opt_abort, "abort")
 #ifdef DYNAMIC_PAGE_SIZE
 			/*

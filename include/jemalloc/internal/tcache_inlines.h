@@ -9,6 +9,7 @@
 #include "jemalloc/internal/large.h"
 #include "jemalloc/internal/san.h"
 #include "jemalloc/internal/sc.h"
+#include "jemalloc/internal/shared_medium_cache.h"
 #include "jemalloc/internal/sz.h"
 #include "jemalloc/internal/tcache.h"
 #include "jemalloc/internal/tcache_ncached_target.h"
@@ -159,6 +160,9 @@ tcache_alloc_large(tsd_t *tsd, arena_t *arena, tcache_t *tcache, size_t size,
 		 * Only allocate one large object at a time, because it's quite
 		 * expensive to create one and not use it.
 		 */
+		bool share = arena == NULL
+		    && shared_medium_cache_eligible(
+		        tsd_tsdn(tsd), tcache, size);
 		arena = arena_choose(tsd, arena);
 		if (unlikely(arena == NULL)) {
 			return NULL;
@@ -166,7 +170,13 @@ tcache_alloc_large(tsd_t *tsd, arena_t *arena, tcache_t *tcache, size_t size,
 		tcache_bin_flush_stashed(tsd, tcache, bin, binind,
 		    /* is_small */ false);
 
-		ret = large_malloc(tsd_tsdn(tsd), arena, sz_s2u(size), zero);
+		ret = share
+		    ? shared_medium_cache_alloc(tsd, arena, size, zero, false)
+		    : NULL;
+		if (ret == NULL) {
+			ret = large_malloc(
+			    tsd_tsdn(tsd), arena, sz_s2u(size), zero);
+		}
 		if (ret == NULL) {
 			return NULL;
 		}

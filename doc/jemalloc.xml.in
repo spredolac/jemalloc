@@ -1449,6 +1449,60 @@ malloc_conf = "xmalloc:true";]]></programlisting>
         setting of tcache_max.</para></listitem>
       </varlistentry>
 
+      <varlistentry id="opt.experimental_shared_cache">
+        <term><mallctl>opt.experimental_shared_cache</mallctl>
+          (<type>bool</type>) <literal>r-</literal></term>
+        <listitem><para>Enable a bounded shared cache for large allocations with
+        usable sizes greater than 16 KiB and at most 64 KiB.  The cache sits below
+        the ordinary automatic tcache and above the arena page allocator; it
+        also serves eligible sizes above the tcache limit.  Slab allocations,
+        sampled or guarded allocations, manually created arenas, and explicit
+        tcaches (including <constant>MALLOCX_TCACHE_NONE</constant>) bypass it.
+        The calling thread's automatic tcache must be enabled.
+        This option does not change the tcache limit or enable HPA.  Objects
+        retain their original arena and page allocator ownership.  They remain
+        allocated in arena statistics until evicted.  Disabled by default, and
+        inactive on builds whose page size exceeds 16 KiB.</para></listitem>
+      </varlistentry>
+
+      <varlistentry id="opt.experimental_shared_cache_arena_group">
+        <term><mallctl>opt.experimental_shared_cache_arena_group</mallctl>
+          (<type>size_t</type>) <literal>r-</literal></term>
+        <listitem><para>Number of consecutive automatic arenas sharing one
+        cache.  The cache group is the arena index divided by this value.
+        Allowed values are 1 through 4096; the default is 1 (one cache per
+        automatic arena).  Each group has an independent lock and LIFO free list
+        for each eligible size class.</para></listitem>
+      </varlistentry>
+
+      <varlistentry id="opt.experimental_shared_cache_group_max_bytes">
+        <term><mallctl>opt.experimental_shared_cache_group_max_bytes</mallctl>
+          (<type>size_t</type>) <literal>r-</literal></term>
+        <listitem><para>Maximum backing extent bytes retained by each shared
+        cache group, excluding cache metadata.  The budget includes large
+        allocation padding and is divided equally among eligible size classes,
+        then rounded down to whole objects.  A full size class returns frees to
+        their original arena backend.  The default is 1572864 (1.5 MiB); zero
+        disables the cache.  The maximum is 128 MiB.</para></listitem>
+      </varlistentry>
+
+      <varlistentry id="opt.experimental_shared_cache_idle_sec">
+        <term><mallctl>opt.experimental_shared_cache_idle_sec</mallctl>
+          (<type>size_t</type>) <literal>r-</literal></term>
+        <listitem><para>Interval in seconds between shared cache maintenance
+        passes.  With background threads enabled, each size class evicts its
+        oldest objects that stayed unused throughout the preceding interval,
+        up to 64 objects per pass.  Newly cached objects are first observed,
+        then become eligible for eviction during the next interval.  Without
+        background threads the capacity bound still applies, but periodic
+        trimming does not run.  The default is 10; allowed values are 1 through
+        3600.  <mallctl>experimental.shared_cache.flush</mallctl> explicitly
+        releases cached objects (concurrent producers may refill the cache).
+        JSON statistics report residency, hits, misses, overflows, trims and
+        mutex wait time under <literal>stats.shared_cache</literal>.
+        </para></listitem>
+      </varlistentry>
+
       <varlistentry id="opt.thp">
         <term>
           <mallctl>opt.thp</mallctl>

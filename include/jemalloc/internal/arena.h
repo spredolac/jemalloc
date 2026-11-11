@@ -198,6 +198,9 @@ void  arena_dalloc_small(tsdn_t *tsdn, void *ptr);
 void  arena_ptr_array_flush(tsd_t *tsd, szind_t binind,
      cache_bin_ptr_array_t *arr, unsigned nflush, bool small,
      arena_t *stats_arena, cache_bin_stats_t merge_stats);
+void  arena_ptr_array_share_large(tsd_t *tsd, szind_t binind,
+     cache_bin_ptr_array_t *arr, unsigned nflush, arena_t *stats_arena,
+     cache_bin_stats_t merge_stats);
 bool  arena_ralloc_no_move(tsdn_t *tsdn, void *ptr, size_t oldsize, size_t size,
      size_t extra, bool zero, size_t *newsize);
 dss_prec_t      arena_dss_prec_get(const arena_t *arena);

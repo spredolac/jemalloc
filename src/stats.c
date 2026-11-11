@@ -1,4 +1,5 @@
 #include "jemalloc/internal/jemalloc_preamble.h"
+#include "jemalloc/internal/shared_medium_cache.h"
 
 #include "jemalloc/internal/arena.h"
 #include "jemalloc/internal/assert.h"
@@ -2106,6 +2107,10 @@ stats_general_opts(emitter_t *emitter) {
 	OPT_WRITE_BOOL("experimental_hpa_start_huge_if_thp_always")
 	OPT_WRITE_BOOL("experimental_hpa_enforce_hugify")
 	OPT_WRITE_BOOL("experimental_hpa_sec_trim")
+	OPT_WRITE_BOOL("experimental_shared_cache")
+	OPT_WRITE_SIZE_T("experimental_shared_cache_arena_group")
+	OPT_WRITE_SIZE_T("experimental_shared_cache_group_max_bytes")
+	OPT_WRITE_SIZE_T("experimental_shared_cache_idle_sec")
 	OPT_WRITE_BOOL("retain")
 	OPT_WRITE_CHAR_P("dss")
 	OPT_WRITE_UNSIGNED("narenas")
@@ -2405,12 +2410,44 @@ stats_global_mutexes_print(emitter_t *emitter) {
 }
 
 static void
+stats_print_shared_cache(emitter_t *emitter) {
+	if (!opt_experimental_shared_cache) {
+		return;
+	}
+	shared_medium_cache_stats_t stats;
+	shared_medium_cache_stats_get(tsd_fetch(), &stats);
+	emitter_json_object_kv_begin(emitter, "shared_cache");
+	emitter_kv(emitter, "active", "Shared medium cache active",
+	    emitter_type_bool, &shared_medium_cache_active);
+#define EMIT_SHARED(field, type)                                               \
+	emitter_kv(emitter, #field, "shared_cache." #field,                    \
+	    emitter_type_##type, &stats.field)
+	EMIT_SHARED(groups, size);
+	EMIT_SHARED(cached_bytes, size);
+	EMIT_SHARED(cached_extent_bytes, size);
+	EMIT_SHARED(capacity_bytes, size);
+	EMIT_SHARED(metadata_bytes, size);
+	EMIT_SHARED(hits, uint64);
+	EMIT_SHARED(misses, uint64);
+	EMIT_SHARED(puts, uint64);
+	EMIT_SHARED(overflows, uint64);
+	EMIT_SHARED(trims, uint64);
+	EMIT_SHARED(trimmed_objects, uint64);
+	EMIT_SHARED(lock_ops, uint64);
+	EMIT_SHARED(lock_wait_ns, uint64);
+	EMIT_SHARED(lock_waits, uint64);
+#undef EMIT_SHARED
+	emitter_json_object_end(emitter);
+}
+
+static void
 stats_print_globals(emitter_t *emitter, bool mutex) {
 	stats_global_t g;
 	stats_gather_global(&g);
 
 	emitter_json_object_kv_begin(emitter, "stats");
 	stats_emit_global(emitter, &g);
+	stats_print_shared_cache(emitter);
 	if (mutex) {
 		stats_global_mutexes_print(emitter);
 	}

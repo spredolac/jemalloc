@@ -1,0 +1,162 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>jemalloc · Shared cache for 16–64 KiB</title>
+  <style>
+    :root{color-scheme:light;--ink:#172c3a;--muted:#506679;--line:#cbd8e1;--blue:#175dd0;--paper:#fff;--wash:#f3f7fa;--green:#167449}
+    *{box-sizing:border-box}body{margin:0;background:var(--wash);color:var(--ink);font:16px/1.55 system-ui,sans-serif}
+    main{max-width:1150px;margin:auto;padding:44px 28px 60px}h1{font-size:clamp(28px,4vw,44px);line-height:1.15;margin:10px 0 18px;letter-spacing:-.03em}
+    h2{font-size:23px;margin:0 0 12px}p{margin:0 0 14px}.eyebrow{color:var(--blue);font-weight:700;font-size:13px;letter-spacing:.12em;text-transform:uppercase}
+    .intro{max-width:830px;font-size:18px;color:var(--muted)}.pill{display:inline-block;border:1px solid var(--line);background:white;border-radius:30px;padding:5px 12px;font-size:13px;margin:0 5px 8px 0}
+    .panel{margin-top:24px;padding:25px;background:var(--paper);border:1px solid var(--line);border-radius:16px}.tabs{display:flex;gap:8px;margin-bottom:12px}
+    button{font:inherit;border:1px solid var(--line);border-radius:8px;padding:8px 18px;background:var(--wash);color:var(--ink);cursor:pointer}
+    button[aria-selected=true]{background:var(--blue);border-color:var(--blue);color:white}button:focus-visible,input:focus-visible{outline:3px solid #e79929;outline-offset:3px}
+    [hidden]{display:none!important}.diagram{width:100%;height:auto;display:block}svg text{font-family:system-ui,sans-serif;fill:var(--ink);font-size:16px}
+    svg .label{font-size:19px;font-weight:650}svg .sub{font-size:14px;fill:var(--muted)}svg .note{font-size:13px;fill:var(--muted)}svg .box{fill:#f7fafc;stroke:var(--line);stroke-width:1.5}
+    svg .shared{fill:#edf4ff;stroke:var(--blue);stroke-width:2}svg .hpa{fill:#edf8f2;stroke:#97c4ad;stroke-width:1.5}svg .edge{fill:none;stroke:#718798;stroke-width:2;marker-end:url(#arrow)}svg .cache-edge{stroke:var(--blue)}
+    .caption{font-size:14px;color:var(--muted);margin-top:12px}.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:20px;margin-top:20px}.card h3{font-size:17px;margin:0 0 8px}.card p{font-size:14px;color:var(--muted)}
+    code{font:13px/1.6 ui-monospace,SFMono-Regular,Consolas,monospace;background:#edf2f6;border-radius:4px;padding:2px 5px}pre{overflow:auto;padding:18px;border-radius:9px;background:#142b3b;color:#e9f1fa;font:13px/1.7 ui-monospace,monospace;white-space:pre-wrap}
+    table{width:100%;border-collapse:collapse;font-size:14px}th,td{text-align:left;padding:10px 12px;border-bottom:1px solid var(--line);vertical-align:top}th{color:var(--muted);font-weight:600}
+    .control{display:flex;align-items:center;flex-wrap:wrap;gap:14px;margin:14px 0}input{accent-color:var(--blue)}.arenas{display:grid;grid-template-columns:repeat(8,1fr);gap:8px;margin:16px 0}
+    .arena{padding:13px 3px;border:1px solid var(--line);border-bottom:4px solid var(--blue);border-radius:8px;text-align:center;font-size:13px}.arena span{display:block;color:var(--muted);font-size:12px}
+    footer{font-size:13px;color:var(--muted);margin-top:28px}@media(max-width:700px){main{padding:24px 14px}.panel{padding:14px}.grid{grid-template-columns:1fr}.arenas{grid-template-columns:repeat(4,1fr)}table{font-size:12px}th,td{padding:8px 5px}}
+    @media print{body{background:white}main{padding:0}.tabs,.control{display:none}.panel{break-inside:avoid}#free-view[hidden]{display:block!important}.panel{border-color:#bbb}footer{margin-top:12px}}
+  </style>
+</head>
+<body>
+<main>
+  <div class="eyebrow">jemalloc / shared16_64 / architecture</div>
+  <h1>Reuse medium allocations<br>before the page allocator.</h1>
+  <p class="intro">A bounded shared cache retains complete large allocations with usable sizes <strong>greater than 16 KiB and up to 64 KiB</strong>. Ordinary tcache stays in place. Threads using the same arena group can reuse each other’s freed objects.</p>
+  <span class="pill">Opt in · off by default</span><span class="pill">PAC or HPA backing</span><span class="pill">No size routing required</span><span class="pill">No per-CPU cache or rseq</span>
+
+  <section class="panel" aria-label="Allocation and free paths">
+    <svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs><marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#718798"/></marker></defs></svg>
+    <div class="tabs" role="tablist" aria-label="Memory operation">
+      <button id="allocate-tab" role="tab" aria-selected="true" aria-controls="allocate-view">Allocation</button>
+      <button id="free-tab" role="tab" aria-selected="false" aria-controls="free-view" tabindex="-1">Free &amp; trim</button>
+    </div>
+    <div id="allocate-view" role="tabpanel" aria-labelledby="allocate-tab">
+      <svg class="diagram" viewBox="0 0 1040 800" role="img" aria-labelledby="alloc-title alloc-desc">
+        <title id="alloc-title">Shared cache sits beneath tcache and above arena large allocations</title>
+        <desc id="alloc-desc">Small objects use tcache and arena bins. Large objects greater than 16 through 32 KiB check tcache before the shared cache. Objects greater than 32 through 64 KiB check the shared cache directly. Misses allocate through the arena page allocator, backed by PAC or HPA. HPA uses SEC for eligible extents at most 32 KiB.</desc>
+        <rect class="box" x="35" y="25" width="280" height="65" rx="10"/><text class="label" x="175" y="53" text-anchor="middle">Small allocations</text><text class="sub" x="175" y="76" text-anchor="middle">Slab size classes</text>
+        <rect class="box" x="370" y="25" width="295" height="65" rx="10"/><text class="label" x="518" y="53" text-anchor="middle">16 &lt; usable size ≤ 32 KiB</text><text class="sub" x="518" y="76" text-anchor="middle">Large size classes</text>
+        <rect class="box" x="710" y="25" width="295" height="65" rx="10"/><text class="label" x="858" y="53" text-anchor="middle">32 &lt; usable size ≤ 64 KiB</text><text class="sub" x="858" y="76" text-anchor="middle">Above the default tcache limit</text>
+        <path class="edge" d="M175 90 V145"/><path class="edge" d="M518 90 V145"/><path class="edge cache-edge" d="M858 90 V260"/>
+        <rect class="box" x="35" y="145" width="630" height="70" rx="10"/><text class="label" x="350" y="175" text-anchor="middle">Ordinary per-thread tcache · default ≤32 KiB</text><text class="sub" x="350" y="199" text-anchor="middle">Hit → return object to caller; miss → follow the size’s path below</text>
+        <path class="edge" d="M175 215 V290"/><text class="note" x="190" y="255">small miss</text>
+        <path class="edge cache-edge" d="M518 215 V260"/><text class="note" x="530" y="241">large miss</text>
+        <rect class="box" x="35" y="290" width="280" height="75" rx="10"/><text class="label" x="175" y="322" text-anchor="middle">Arena bins</text><text class="sub" x="175" y="347" text-anchor="middle">Share slab regions</text>
+        <rect class="shared" x="370" y="260" width="635" height="105" rx="12"/><text class="label" x="688" y="293" text-anchor="middle">NEW · Shared 16–64 KiB cache</text><text class="sub" x="688" y="320" text-anchor="middle">One bounded LIFO + mutex per size class / arena group</text><text class="sub" x="688" y="345" text-anchor="middle">Hit → return object; no SEC / HPA / PAC operation</text>
+        <path class="edge cache-edge" d="M688 365 V417"/><text class="note" x="703" y="398">miss · cache lock released</text>
+        <rect class="box" x="370" y="417" width="635" height="58" rx="10"/><text class="label" x="688" y="451" text-anchor="middle">Arena large allocation</text>
+        <path class="edge" d="M175 365 V510"/><text class="note" x="190" y="448">refill with a new slab</text><path class="edge" d="M688 475 V510"/>
+        <rect class="box" x="35" y="510" width="970" height="65" rx="10"/><text class="label" x="520" y="538" text-anchor="middle">Page allocator of the selected arena</text><text class="sub" x="520" y="560" text-anchor="middle">Existing backend selection and HPA admission limits remain in effect</text>
+        <path class="edge" d="M175 575 V690"/><text class="note" x="190" y="636">PAC selection / fallback</text>
+        <rect class="box" x="35" y="690" width="280" height="70" rx="10"/><text class="label" x="175" y="721" text-anchor="middle">PAC</text><text class="sub" x="175" y="745" text-anchor="middle">Extent reuse / purge / kernel</text>
+        <path class="edge" d="M518 575 V625"/><text class="note" x="531" y="603">HPA · SEC-eligible extent</text>
+        <rect class="box" x="370" y="625" width="295" height="60" rx="10"/><text class="label" x="518" y="651" text-anchor="middle">SEC · limit still 32 KiB</text><text class="sub" x="518" y="673" text-anchor="middle">Caches free extents, not objects</text>
+        <path class="edge" d="M665 655 H858 V710"/><text class="note" x="722" y="645">SEC miss</text>
+        <path class="edge" d="M970 575 V675 H890 V710"/><text class="note" x="760" y="596">HPA-admitted extent &gt;32 KiB</text><text class="note" x="780" y="615">bypasses SEC</text>
+        <rect class="hpa" x="710" y="710" width="295" height="65" rx="10"/><text class="label" x="858" y="738" text-anchor="middle">HPA shard</text><text class="sub" x="858" y="761" text-anchor="middle">Hugepage packing / purge / kernel</text>
+      </svg>
+      <p class="caption">Shown with <code>tcache_max:32768</code>. On a 4 KiB page build, slab classes end at 14 KiB; the exact 16 KiB class is large and follows the existing tcache → arena path. The new cache excludes exactly 16 KiB.</p>
+    </div>
+    <div id="free-view" role="tabpanel" aria-labelledby="free-tab" hidden>
+      <svg class="diagram" viewBox="0 0 1040 570" role="img" aria-labelledby="free-title free-desc">
+        <title id="free-title">Freed objects remain active until shared cache overflow or cold trimming</title>
+        <desc id="free-desc">Frees through 32 KiB enter ordinary tcache, whose flushes enter the shared cache for sizes greater than 16 KiB. Frees greater than 32 through 64 KiB enter the shared cache directly. Overflow or cold-tail trimming frees through the original arena and original PAC or HPA backend, with no shared cache bin lock held.</desc>
+        <rect class="box" x="35" y="25" width="440" height="65" rx="10"/><text class="label" x="255" y="53" text-anchor="middle">Free · 16 &lt; size ≤ 32 KiB</text><text class="sub" x="255" y="77" text-anchor="middle">Ordinary tcache first</text>
+        <rect class="box" x="565" y="25" width="440" height="65" rx="10"/><text class="label" x="785" y="53" text-anchor="middle">Free · 32 &lt; size ≤ 64 KiB</text><text class="sub" x="785" y="77" text-anchor="middle">Direct shared-cache insertion</text>
+        <path class="edge" d="M255 90 V132"/>
+        <rect class="box" x="35" y="132" width="440" height="62" rx="10"/><text class="label" x="255" y="160" text-anchor="middle">Ordinary tcache</text><text class="sub" x="255" y="183" text-anchor="middle">Reuse within this thread</text>
+        <path class="edge cache-edge" d="M255 194 V270"/><text class="note" x="270" y="235">overflow / flush</text><path class="edge cache-edge" d="M785 90 V270"/>
+        <rect class="shared" x="35" y="270" width="970" height="102" rx="12"/><text class="label" x="520" y="302" text-anchor="middle">Shared cache · group of the object’s original arena</text><text class="sub" x="520" y="330" text-anchor="middle">Newest objects reused first · original extent metadata stays attached</text><text class="sub" x="520" y="353" text-anchor="middle">Object remains active in the underlying arena while cached</text>
+        <path class="edge" d="M520 372 V443"/><text class="note" x="535" y="402">full class OR cold-tail trim</text><text class="note" x="535" y="422">detach under class lock → release class lock</text>
+        <rect class="box" x="35" y="443" width="970" height="95" rx="10"/><text class="label" x="520" y="475" text-anchor="middle">Return through the original arena / original page allocator</text><text class="sub" x="520" y="502" text-anchor="middle">PAC, or HPA via SEC when the backing extent is SEC-eligible</text><text class="sub" x="520" y="525" text-anchor="middle">Extent &gt;32 KiB → HPA directly if HPA-owned; SEC32 remains unchanged</text>
+      </svg>
+      <p class="caption">Background threads trim each class’s cold tail using its low-water mark. Without them, capacity bounds still apply. Explicit <code>experimental.shared_cache.flush</code> releases cached inventory; concurrent producers can refill it.</p>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>Sharing follows arenas, not CPU IDs.</h2>
+    <p>The default is one cache per automatic arena. Increasing the arena-group size lets fewer caches serve more arenas. A returned object keeps its original arena and HPA/PAC ownership even when another arena in the group reuses it.</p>
+    <div class="control"><label for="group-size">Arenas per cache group</label><input id="group-size" type="range" min="1" max="8" value="1"><output id="group-value" for="group-size">1</output></div>
+    <div id="arena-map" class="arenas" aria-label="Example with eight automatic arenas"></div>
+    <p id="group-summary" class="caption" aria-live="polite"></p>
+    <p class="caption">This example has eight automatic arenas. Group = floor(arena index / arenas per group). Each group’s 1.5 MiB budget is split across usable large size classes and rounded down to whole backing extents. The budget is independent of how many arenas share the group.</p>
+  </section>
+
+  <section class="panel">
+    <h2>Configuration and memory bounds</h2>
+    <pre>MALLOC_CONF="experimental_shared_cache:true"
+
+# Optional: one cache per four automatic arenas
+experimental_shared_cache_arena_group:4
+
+# Defaults when enabled
+experimental_shared_cache_group_max_bytes:1572864
+experimental_shared_cache_idle_sec:10</pre>
+    <table>
+      <thead><tr><th>Layer</th><th>Stores</th><th>Scope / policy</th></tr></thead>
+      <tbody>
+        <tr><td>Tcache</td><td>Objects, default ≤32 KiB</td><td>One per thread; existing behavior</td></tr>
+        <tr><td>Arena bins</td><td>Small objects within slabs</td><td>Existing arena/bin shards</td></tr>
+        <tr><td><strong>Shared cache</strong></td><td>Complete objects, (16, 64] KiB</td><td>Per arena group / size class; bounded LIFO and cold-tail trim</td></tr>
+        <tr><td>SEC</td><td>Free backing extents, ≤32 KiB</td><td>Existing SEC shards belonging to each HPA shard</td></tr>
+        <tr><td>HPA / PAC</td><td>Pages and extents</td><td>Existing one HPA shard per automatic arena when HPA is enabled</td></tr>
+      </tbody>
+    </table>
+    <div class="grid">
+      <div class="card"><h3>Budget includes padding</h3><p>A 64 KiB usable object may occupy a 68 KiB extent on a 4 KiB cache-oblivious build. Shared-cache accounting charges all backing bytes. HPA and SEC admission also use backing extent size.</p></div>
+      <div class="card"><h3>HPA is a separate choice</h3><p>This option works with PAC too. If testing HPA for the full range, ensure its slab allocation limit admits the padded backing extent; setting the shared-cache option alone does not change that limit.</p></div>
+      <div class="card"><h3>Reuse before page reuse</h3><p>A hit avoids a page allocator operation. Trimming returns cold objects so HPA/PAC can reuse their pages. Metadata is additional; cached bytes remain allocated in ordinary arena statistics.</p></div>
+    </div>
+  </section>
+  <footer>Implementation: <code>src/shared_medium_cache.c</code> · Branch: <code>shared16_64</code> based on dev · Diagram describes the opt-in implementation, not production defaults. The calling thread’s automatic tcache must be enabled. Sampled, guarded, manually created arena and explicit tcache paths bypass the cache. Larger-than-64 KiB objects follow existing paths.</footer>
+</main>
+<script>
+  const tabs = [...document.querySelectorAll('[role="tab"]')];
+  function selectTab(tab) {
+    for (const item of tabs) {
+      const selected = item === tab;
+      item.setAttribute('aria-selected', String(selected));
+      item.tabIndex = selected ? 0 : -1;
+      document.getElementById(item.getAttribute('aria-controls')).hidden = !selected;
+    }
+  }
+  tabs.forEach((tab, i) => {
+    tab.addEventListener('click', () => selectTab(tab));
+    tab.addEventListener('keydown', event => {
+      if (['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) {
+        event.preventDefault();
+        const next = event.key === 'Home' ? tabs[0] : event.key === 'End' ? tabs.at(-1) : tabs[(i + 1) % tabs.length];
+        selectTab(next); next.focus();
+      }
+    });
+  });
+  const slider = document.getElementById('group-size');
+  const palette = ['#175dd0','#167449','#9a4d18','#6a42b3','#087c88','#a64269','#536f17','#677687'];
+  function drawGroups() {
+    const size = Number(slider.value);
+    document.getElementById('group-value').value = String(size);
+    const map = document.getElementById('arena-map');
+    map.replaceChildren();
+    for (let i = 0; i < 8; i++) {
+      const group = Math.floor(i / size);
+      const cell = document.createElement('div'); cell.className = 'arena';
+      cell.style.borderBottomColor = palette[group];
+      cell.append('Arena ' + i);
+      const label = document.createElement('span'); label.textContent = 'Cache ' + group; cell.append(label); map.append(cell);
+    }
+    const groups = Math.ceil(8 / size);
+    document.getElementById('group-summary').textContent = `${groups} cache group${groups === 1 ? '' : 's'} · aggregate backing-byte budget at most ${groups * 1.5} MiB, plus metadata.`;
+  }
+  slider.addEventListener('input', drawGroups); drawGroups();
+</script>
+</body>
+</html>

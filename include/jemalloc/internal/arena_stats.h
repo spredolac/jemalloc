@@ -109,6 +109,15 @@ arena_stats_init(tsdn_t *tsdn, arena_stats_t *arena_stats) {
 }
 
 static inline void
+arena_stats_large_nrequests_add(tsdn_t *tsdn, arena_stats_t *arena_stats,
+    szind_t szind, uint64_t nrequests) {
+	LOCKEDINT_MTX_LOCK(tsdn, arena_stats->mtx);
+	locked_inc_u64(tsdn, LOCKEDINT_MTX(arena_stats->mtx),
+	    &arena_stats->lstats[szind - SC_NBINS].nrequests, nrequests);
+	LOCKEDINT_MTX_UNLOCK(tsdn, arena_stats->mtx);
+}
+
+static inline void
 arena_stats_large_flush_nrequests_add(tsdn_t *tsdn, arena_stats_t *arena_stats,
     szind_t szind, uint64_t nrequests) {
 	LOCKEDINT_MTX_LOCK(tsdn, arena_stats->mtx);

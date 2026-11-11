@@ -1,4 +1,5 @@
 #include "jemalloc/internal/jemalloc_preamble.h"
+#include "jemalloc/internal/shared_medium_cache.h"
 
 #include "jemalloc/internal/arena.h"
 #include "jemalloc/internal/arenas_management.h"
@@ -303,6 +304,11 @@ background_thread_pause_check(tsdn_t *tsdn, background_thread_info_t *info) {
 static inline void
 background_work_sleep_once(
     tsdn_t *tsdn, background_thread_info_t *info, unsigned ind) {
+	if (shared_medium_cache_active && ind == 0) {
+		malloc_mutex_unlock(tsdn, &info->mtx);
+		shared_medium_cache_background_work(tsdn_tsd(tsdn));
+		malloc_mutex_lock(tsdn, &info->mtx);
+	}
 	uint64_t ns_until_deferred = DEFERRED_WORK_MAX;
 	uint64_t min_interval_ns = background_thread_min_interval_ns();
 	unsigned narenas = narenas_total_get();
@@ -334,6 +340,13 @@ background_work_sleep_once(
 	}
 
 	uint64_t sleep_ns;
+	if (shared_medium_cache_active && ind == 0) {
+		uint64_t interval = opt_experimental_shared_cache_idle_sec
+		    * KQU(1000000000);
+		if (ns_until_deferred > interval) {
+			ns_until_deferred = interval;
+		}
+	}
 	if (ns_until_deferred == DEFERRED_WORK_MAX) {
 		sleep_ns = BACKGROUND_THREAD_INDEFINITE_SLEEP;
 	} else {

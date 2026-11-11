@@ -12,6 +12,7 @@
 #include "jemalloc/internal/malloc_dispatch.h"
 #include "jemalloc/internal/safety_check.h"
 #include "jemalloc/internal/sc.h"
+#include "jemalloc/internal/shared_medium_cache.h"
 #include "jemalloc/internal/sz.h"
 #include "jemalloc/internal/tcache_inlines.h"
 
@@ -32,6 +33,18 @@ malloc_dispatch_malloc(tsdn_t *tsdn, arena_t *arena, size_t size, szind_t ind,
 		/* (size > tcache_max) case falls through. */
 	}
 
+	if (!slab && arena == NULL
+	    && shared_medium_cache_eligible(tsdn, tcache, size)) {
+		arena = arena_choose(tsdn_tsd(tsdn), NULL);
+		if (unlikely(arena == NULL)) {
+			return NULL;
+		}
+		void *ret = shared_medium_cache_alloc(
+		    tsdn_tsd(tsdn), arena, size, zero, true);
+		if (ret != NULL) {
+			return ret;
+		}
+	}
 	return arena_malloc_hard(tsdn, arena, size, ind, zero, slab);
 }
 
@@ -98,6 +111,11 @@ malloc_dispatch_dalloc_large(tsdn_t *tsdn, void *ptr, tcache_t *tcache,
 			    tsdn, &arena_emap_global, ptr);
 			if (large_dalloc_safety_checks(edata, ptr, usize)) {
 				/* See the comment in isfree. */
+				return;
+			}
+			if (shared_medium_cache_eligible(tsdn, tcache, usize)
+			    && shared_medium_cache_dalloc(
+			        tsdn_tsd(tsdn), edata, ptr)) {
 				return;
 			}
 			large_dalloc(tsdn, edata);
