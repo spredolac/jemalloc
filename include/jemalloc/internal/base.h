@@ -5,12 +5,21 @@
 #include "jemalloc/internal/edata.h"
 #include "jemalloc/internal/ehooks.h"
 #include "jemalloc/internal/mutex.h"
+#include "jemalloc/internal/pages.h"
 
+#ifdef _WIN32
+/*
+ * Windows commits base blocks in full.  Use its allocation granularity,
+ * rounded up to the allocator page size, to avoid excess committed metadata.
+ */
+#	define BASE_BLOCK_MIN_ALIGN PAGE_CEILING((size_t)64 << 10)
+#else
 /*
  * Alignment when THP is not enabled.  Set to constant 2M in case the HUGEPAGE
  * value is unexpected high (which would cause VM over-reservation).
  */
-#define BASE_BLOCK_MIN_ALIGN ((size_t)2 << 20)
+#	define BASE_BLOCK_MIN_ALIGN ((size_t)2 << 20)
+#endif
 
 enum metadata_thp_mode_e {
 	metadata_thp_disabled = 0,

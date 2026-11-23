@@ -249,10 +249,98 @@ TEST_BEGIN(test_base_ehooks_get_for_metadata_custom_hook) {
 }
 TEST_END
 
+static void
+base_blocks_check(base_t *base, size_t alignment) {
+	size_t mapped = 0;
+	for (base_block_t *block = base->blocks; block != NULL;
+	    block = block->next) {
+		expect_zu_eq((uintptr_t)block % alignment, 0,
+		    "Base block must be aligned");
+		expect_zu_eq(block->size % alignment, 0,
+		    "Base block size must be rounded to its alignment");
+		mapped += block->size;
+#ifdef _WIN32
+		MEMORY_BASIC_INFORMATION info;
+		assert_zu_eq(VirtualQuery(block, &info, sizeof(info)),
+		    sizeof(info), "Unexpected VirtualQuery() failure");
+		expect_ptr_eq(info.AllocationBase, block,
+		    "Base block must begin a reservation");
+		expect_u_eq(info.State, MEM_COMMIT,
+		    "Windows base blocks must be committed in full");
+		expect_zu_eq(info.RegionSize, block->size,
+		    "Committed region must match the base block");
+#endif
+	}
+	if (config_stats) {
+		expect_zu_eq(
+		    base->mapped, mapped, "Incorrect mapped accounting");
+		expect_zu_le(base->allocated, base->resident,
+		    "Allocated metadata must not exceed resident metadata");
+		expect_zu_le(base->resident, mapped,
+		    "Resident metadata must not exceed mapped metadata");
+	}
+}
+
+TEST_BEGIN(test_base_block_size) {
+	/* Calculate the policy independently of BASE_BLOCK_MIN_ALIGN. */
+#ifdef _WIN32
+	SYSTEM_INFO info;
+	GetSystemInfo(&info);
+	size_t alignment = PAGE_CEILING(info.dwAllocationGranularity);
+#else
+	size_t alignment = (size_t)2 << 20;
+#endif
+	if (metadata_thp_enabled()) {
+		alignment = HUGEPAGE;
+	}
+
+	tsdn_t *tsdn = tsd_tsdn(tsd_fetch());
+	base_t *base = base_new(tsdn, 1,
+	    (extent_hooks_t *)&ehooks_default_extent_hooks,
+	    /* metadata_use_hooks */ true);
+	assert_ptr_not_null(base, "Unexpected base_new() failure");
+
+	size_t expected_size = sz_psz2u(QUANTUM_CEILING(sizeof(base_block_t))
+	    + QUANTUM_CEILING(sizeof(base_t)));
+	if (expected_size < sz_pind2sz(1)) {
+		expected_size = sz_pind2sz(1);
+	}
+	expect_zu_eq(base->blocks->size,
+	    ALIGNMENT_CEILING(expected_size, alignment),
+	    "Initial base block should not reserve unnecessary metadata space");
+	base_blocks_check(base, alignment);
+
+	const size_t sizes[] = {1, ((size_t)64 << 10) - 1, (size_t)64 << 10,
+	    ((size_t)64 << 10) + 1, HUGEPAGE + 1};
+	const size_t alignments[] = {
+	    QUANTUM, CACHELINE, PAGE, HUGEPAGE, HUGEPAGE << 1};
+	for (unsigned i = 0; i < sizeof(sizes) / sizeof(sizes[0]); i++) {
+		unsigned char *p = base_alloc(
+		    tsdn, base, sizes[i], alignments[i]);
+		assert_ptr_not_null(p, "Unexpected base_alloc() failure");
+		expect_zu_eq((uintptr_t)p % alignments[i], 0,
+		    "Unexpected metadata allocation alignment");
+		bool zero = true;
+		for (size_t j = 0; j < sizes[i]; j++) {
+			if (p[j] != 0) {
+				zero = false;
+				break;
+			}
+		}
+		expect_true(zero, "Metadata allocation must be zeroed");
+		memset(p, 0xa5, sizes[i]);
+		base_blocks_check(base, alignment);
+	}
+	expect_ptr_not_null(base->blocks->next,
+	    "Large metadata requests should exercise block growth");
+	base_delete(tsdn, base);
+}
+TEST_END
+
 int
 main(void) {
-	return test(test_base_hooks_default, test_base_hooks_null,
-	    test_base_hooks_not_null,
+	return test(test_base_block_size, test_base_hooks_default,
+	    test_base_hooks_null, test_base_hooks_not_null,
 	    test_base_ehooks_get_for_metadata_default_hook,
 	    test_base_ehooks_get_for_metadata_custom_hook);
 }
